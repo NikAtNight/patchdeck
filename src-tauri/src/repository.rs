@@ -85,6 +85,16 @@ pub struct Comparison {
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CommitInfo {
+    pub id: String,
+    pub short_id: String,
+    pub author: String,
+    pub timestamp: i64,
+    pub subject: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FileDiff {
     pub path: String,
     pub old_path: Option<String>,
@@ -139,15 +149,7 @@ struct LimitedGitOutput {
 }
 
 pub fn open(path: &str) -> Result<RepositoryInfo, RepositoryError> {
-    let selected_path = Path::new(path);
-    if !selected_path.is_dir() {
-        return Err(RepositoryError::new(
-            "Choose a folder that contains a Git repository.",
-        ));
-    }
-
-    let root_output = run_git(Some(selected_path), ["rev-parse", "--show-toplevel"])?;
-    let root = PathBuf::from(text_output(&root_output)?.trim());
+    let root = resolve_root(path)?;
     let branches = read_branches(&root)?;
     let symbolic_branch = optional_git_text(&root, ["symbolic-ref", "--quiet", "--short", "HEAD"])?;
     let current_branch = symbolic_branch
@@ -277,6 +279,62 @@ pub fn compare(
     })
 }
 
+// Resolves the Git working-tree root without reading branches, so hot paths
+// like per-file diff loads cost one Git invocation instead of four.
+pub(crate) fn resolve_root(path: &str) -> Result<PathBuf, RepositoryError> {
+    let selected_path = Path::new(path);
+    if !selected_path.is_dir() {
+        return Err(RepositoryError::new(
+            "Choose a folder that contains a Git repository.",
+        ));
+    }
+    let root_output = run_git(Some(selected_path), ["rev-parse", "--show-toplevel"])?;
+    Ok(PathBuf::from(text_output(&root_output)?.trim()))
+}
+
+pub fn commits(
+    repository_path: &str,
+    merge_base: &str,
+    compare_commit: &str,
+) -> Result<Vec<CommitInfo>, RepositoryError> {
+    validate_commit_id(merge_base)?;
+    validate_commit_id(compare_commit)?;
+    let root = resolve_root(repository_path)?;
+    let range = format!("{merge_base}..{compare_commit}");
+    let output = run_git(
+        Some(&root),
+        [
+            "log",
+            "--format=%H%x1f%h%x1f%an%x1f%at%x1f%s",
+            range.as_str(),
+        ],
+    )?;
+
+    let mut commits = Vec::new();
+    for raw_line in output.stdout.split(|byte| *byte == b'\n') {
+        let line = raw_line.strip_suffix(b"\r").unwrap_or(raw_line);
+        if line.is_empty() {
+            continue;
+        }
+        let fields: Vec<_> = line.split(|byte| *byte == b'\x1f').collect();
+        if fields.len() != 5 {
+            return Err(RepositoryError::new("Git returned an invalid commit list."));
+        }
+        let timestamp = std::str::from_utf8(fields[3])
+            .map_err(|_| RepositoryError::new("Git returned an invalid commit timestamp."))?
+            .parse::<i64>()
+            .map_err(|_| RepositoryError::new("Git returned an invalid commit timestamp."))?;
+        commits.push(CommitInfo {
+            id: decode_git_text(fields[0], "commit ID")?,
+            short_id: decode_git_text(fields[1], "short commit ID")?,
+            author: decode_git_text(fields[2], "commit author")?,
+            timestamp,
+            subject: decode_git_text(fields[4], "commit subject")?,
+        });
+    }
+    Ok(commits)
+}
+
 pub fn file_diff(
     repository_path: &str,
     merge_base: &str,
@@ -286,8 +344,36 @@ pub fn file_diff(
 ) -> Result<FileDiff, RepositoryError> {
     validate_commit_id(merge_base)?;
     validate_commit_id(compare_commit)?;
-    let repository = open(repository_path)?;
-    let root = Path::new(&repository.path);
+    file_diff_against(
+        repository_path,
+        merge_base,
+        Some(compare_commit),
+        path,
+        old_path,
+    )
+}
+
+// Includes staged and unstaged edits in the checked-out working tree. Keep
+// ordinary review reads on `file_diff`, which remains commit-to-commit.
+pub fn working_tree_file_diff(
+    repository_path: &str,
+    merge_base: &str,
+    path: &str,
+    old_path: Option<&str>,
+) -> Result<FileDiff, RepositoryError> {
+    validate_commit_id(merge_base)?;
+    file_diff_against(repository_path, merge_base, None, path, old_path)
+}
+
+fn file_diff_against(
+    repository_path: &str,
+    merge_base: &str,
+    compare_commit: Option<&str>,
+    path: &str,
+    old_path: Option<&str>,
+) -> Result<FileDiff, RepositoryError> {
+    let root = resolve_root(repository_path)?;
+    let root = root.as_path();
 
     let mut args: Vec<OsString> = [
         "diff",
@@ -297,12 +383,14 @@ pub fn file_diff(
         "--find-renames",
         "--unified=3",
         merge_base,
-        compare_commit,
-        "--",
     ]
     .into_iter()
     .map(OsString::from)
     .collect();
+    if let Some(compare_commit) = compare_commit {
+        args.push(OsString::from(compare_commit));
+    }
+    args.push(OsString::from("--"));
     if let Some(previous_path) = old_path {
         args.push(OsString::from(previous_path));
     }
@@ -823,6 +911,63 @@ mod tests {
     }
 
     #[test]
+    fn working_tree_diff_includes_an_edit_made_after_the_branch_commit() {
+        let fixture = FixtureRepository::new();
+        fixture.write("tracked.txt", "base\n");
+        fixture.git(["add", "tracked.txt"]);
+        fixture.git(["commit", "-m", "base"]);
+        fixture.git(["branch", "-M", "main"]);
+        fixture.git(["checkout", "-b", "feature"]);
+        fixture.write("tracked.txt", "committed branch edit\n");
+        fixture.git(["add", "tracked.txt"]);
+        fixture.git(["commit", "-m", "feature edit"]);
+
+        let merge_base = fixture.git(["rev-parse", "main"]);
+        let compare_commit = fixture.git(["rev-parse", "feature"]);
+        fixture.write("tracked.txt", "uncommitted editor edit\n");
+
+        let committed = file_diff(
+            fixture.path.to_str().unwrap(),
+            &merge_base,
+            &compare_commit,
+            "tracked.txt",
+            None,
+        )
+        .unwrap();
+        let working = working_tree_file_diff(
+            fixture.path.to_str().unwrap(),
+            &merge_base,
+            "tracked.txt",
+            None,
+        )
+        .unwrap();
+
+        assert!(diff_contents(&committed).contains("committed branch edit"));
+        assert!(!diff_contents(&committed).contains("uncommitted editor edit"));
+        assert!(diff_contents(&working).contains("uncommitted editor edit"));
+    }
+
+    #[test]
+    fn lists_feature_commits_newest_first() {
+        let fixture = FixtureRepository::new();
+        fixture.git(["commit", "--allow-empty", "-m", "base"]);
+        fixture.git(["branch", "-M", "main"]);
+        fixture.git(["checkout", "-b", "feature"]);
+        fixture.git(["commit", "--allow-empty", "-m", "first feature commit"]);
+        fixture.git(["commit", "--allow-empty", "-m", "second feature commit"]);
+
+        let merge_base = fixture.git(["rev-parse", "main"]);
+        let compare_commit = fixture.git(["rev-parse", "feature"]);
+        let commits =
+            commits(fixture.path.to_str().unwrap(), &merge_base, &compare_commit).unwrap();
+
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].subject, "second feature commit");
+        assert_eq!(commits[1].subject, "first feature commit");
+        assert_eq!(commits[0].id, compare_commit);
+    }
+
+    #[test]
     fn identifies_renamed_and_binary_files_in_a_real_repository() {
         let fixture = FixtureRepository::new();
         fixture.write("old name.txt", "same\nbefore\nstill same\n");
@@ -1041,5 +1186,14 @@ mod tests {
         let mut hasher = DefaultHasher::new();
         records.hash(&mut hasher);
         hasher.finish()
+    }
+
+    fn diff_contents(diff: &FileDiff) -> String {
+        diff.hunks
+            .iter()
+            .flat_map(|hunk| &hunk.lines)
+            .map(|line| line.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }

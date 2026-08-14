@@ -45,6 +45,14 @@ export interface Comparison {
   files: ChangedFile[];
 }
 
+export interface CommitInfo {
+  id: string;
+  shortId: string;
+  author: string;
+  timestamp: number;
+  subject: string;
+}
+
 export type DiffLineKind = "context" | "addition" | "deletion" | "meta";
 
 export interface DiffLine {

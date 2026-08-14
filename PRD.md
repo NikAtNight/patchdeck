@@ -1,4 +1,4 @@
-# Product Requirements Document: Branch Diff Viewer
+# Product Requirements Document: Patchdeck
 
 **Status:** Implemented MVP  
 **Product type:** Local, read-only developer tool  
@@ -6,7 +6,7 @@
 
 ## 1. Product summary
 
-Branch Diff Viewer lets a developer review the committed changes on one local Git branch against another before opening a pull request.
+Patchdeck lets a developer review the committed changes on one local Git branch against another before opening a pull request.
 
 The experience follows the core model of GitHub's **Files changed** view without requiring a remote repository or pull request. A user opens a local Git repository, selects a base branch and compare branch, and sees:
 

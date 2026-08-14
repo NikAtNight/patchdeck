@@ -1,0 +1,2 @@
+.diff-line.addition .intraline { background: var(--diff-add-word-bg); border-radius: 2px; }
+.diff-line.deletion .intraline { background: var(--diff-del-word-bg); border-radius: 2px; }

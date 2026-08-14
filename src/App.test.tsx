@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import "@testing-library/jest-dom/vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
+import { resetReviewStore } from "./review/reviewStore";
 import type { Comparison, FileDiff, RepositoryInfo } from "./types";
 
 const mocks = vi.hoisted(() => ({
@@ -11,16 +12,91 @@ const mocks = vi.hoisted(() => ({
   openWorkspaceProject: vi.fn(),
   compareBranches: vi.fn(),
   loadFileDiff: vi.fn(),
+  loadWorkingTreeFileDiff: vi.fn(),
+  listCommits: vi.fn(),
+}));
+
+const hermesMocks = vi.hoisted(() => ({
+  status: {
+    state: "disconnected",
+    mode: null,
+    url: null,
+    version: null,
+    activeWorkers: 0,
+    error: null,
+  },
+  connectDiscovered: vi.fn(),
+  connectManaged: vi.fn(),
+  connectExisting: vi.fn(),
+  disconnect: vi.fn(),
+  refresh: vi.fn(),
+  listHermesBoards: vi.fn(),
+  listHermesProfiles: vi.fn(),
+  getHermesBoard: vi.fn(),
+  getHermesTask: vi.fn(),
+  getHermesTaskLog: vi.fn(),
+  addHermesComment: vi.fn(),
+  patchHermesTaskStatus: vi.fn(),
+  listHermesHomeChannels: vi.fn(),
+  createHermesTask: vi.fn(),
+  addHermesTaskLink: vi.fn(),
+  removeHermesTaskLink: vi.fn(),
+  setHermesHomeSubscription: vi.fn(),
+  uploadHermesAttachment: vi.fn(),
+  downloadHermesAttachment: vi.fn(),
+  deleteHermesAttachment: vi.fn(),
+  subscribeHermesEvents: vi.fn(),
+  unsubscribeHermesEvents: vi.fn(),
+}));
+
+const editorMocks = vi.hoisted(() => ({
+  loadEditableFile: vi.fn(),
+  saveEditableFile: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: mocks.dialogOpen }));
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn().mockResolvedValue(() => {}),
+}));
 vi.mock("./api", () => ({
   openRepository: mocks.openRepository,
   openWorkspace: mocks.openWorkspace,
   openWorkspaceProject: mocks.openWorkspaceProject,
   compareBranches: mocks.compareBranches,
   loadFileDiff: mocks.loadFileDiff,
+  loadWorkingTreeFileDiff: mocks.loadWorkingTreeFileDiff,
+  listCommits: mocks.listCommits,
 }));
+vi.mock("./hermes/useHermesConnection", () => ({
+  useHermesConnection: () => ({
+    status: hermesMocks.status,
+    connectDiscovered: hermesMocks.connectDiscovered,
+    connectManaged: hermesMocks.connectManaged,
+    connectExisting: hermesMocks.connectExisting,
+    disconnect: hermesMocks.disconnect,
+    refresh: hermesMocks.refresh,
+  }),
+}));
+vi.mock("./hermes/api", () => ({
+  listHermesBoards: hermesMocks.listHermesBoards,
+  listHermesProfiles: hermesMocks.listHermesProfiles,
+  getHermesBoard: hermesMocks.getHermesBoard,
+  getHermesTask: hermesMocks.getHermesTask,
+  getHermesTaskLog: hermesMocks.getHermesTaskLog,
+  addHermesComment: hermesMocks.addHermesComment,
+  patchHermesTaskStatus: hermesMocks.patchHermesTaskStatus,
+  listHermesHomeChannels: hermesMocks.listHermesHomeChannels,
+  createHermesTask: hermesMocks.createHermesTask,
+  addHermesTaskLink: hermesMocks.addHermesTaskLink,
+  removeHermesTaskLink: hermesMocks.removeHermesTaskLink,
+  setHermesHomeSubscription: hermesMocks.setHermesHomeSubscription,
+  uploadHermesAttachment: hermesMocks.uploadHermesAttachment,
+  downloadHermesAttachment: hermesMocks.downloadHermesAttachment,
+  deleteHermesAttachment: hermesMocks.deleteHermesAttachment,
+  subscribeHermesEvents: hermesMocks.subscribeHermesEvents,
+  unsubscribeHermesEvents: hermesMocks.unsubscribeHermesEvents,
+}));
+vi.mock("./editor/api", () => editorMocks);
 
 const repository: RepositoryInfo = {
   name: "example",
@@ -77,15 +153,33 @@ const fileDiff: FileDiff = {
   ],
 };
 
-describe("Branch Diff Viewer", () => {
+describe("Patchdeck", () => {
   beforeEach(() => {
     localStorage.clear();
+    resetReviewStore();
     mocks.dialogOpen.mockReset();
     mocks.openRepository.mockReset();
     mocks.openWorkspace.mockReset();
     mocks.openWorkspaceProject.mockReset();
     mocks.compareBranches.mockReset();
     mocks.loadFileDiff.mockReset();
+    mocks.loadWorkingTreeFileDiff.mockReset();
+    mocks.listCommits.mockReset();
+    mocks.listCommits.mockResolvedValue([]);
+    editorMocks.loadEditableFile.mockReset();
+    editorMocks.saveEditableFile.mockReset();
+    Object.assign(hermesMocks.status, {
+      state: "disconnected",
+      mode: null,
+      url: null,
+      version: null,
+      activeWorkers: 0,
+      error: null,
+    });
+    for (const [name, mock] of Object.entries(hermesMocks)) {
+      if (name !== "status" && typeof mock === "function" && "mockReset" in mock) mock.mockReset();
+    }
+    hermesMocks.refresh.mockResolvedValue(undefined);
   });
 
   afterEach(cleanup);
@@ -94,8 +188,9 @@ describe("Branch Diff Viewer", () => {
     render(<App />);
     expect(screen.getByRole("heading", { name: /see the whole change/i })).toBeInTheDocument();
     expect(screen.queryByText("Branch Diff")).not.toBeInTheDocument();
-    expect(screen.getByText(/nothing leaves your machine/i)).toBeInTheDocument();
-    expect(screen.getByText(/read-only by design/i)).toBeInTheDocument();
+    expect(screen.getByText(/nothing is published automatically/i)).toBeInTheDocument();
+    expect(screen.getByText(/local-first/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Connect Hermes" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Open a workspace" })).toBeInTheDocument();
   });
 
@@ -122,6 +217,110 @@ describe("Branch Diff Viewer", () => {
     expect(screen.getByRole("tab", { name: "example" })).toHaveAttribute("aria-selected", "true");
     await waitFor(() => expect(mocks.openRepository).toHaveBeenCalledWith(repository.path));
     expect(mocks.openRepository).toHaveBeenCalledTimes(1);
+  });
+
+  it("stays review-only when no Hermes agent is attached", async () => {
+    localStorage.setItem(
+      "branch-diff-viewer.session",
+      JSON.stringify({
+        version: 1,
+        tabs: [{ name: repository.name, path: repository.path, openMode: "repository" }],
+        activePath: repository.path,
+      }),
+    );
+    localStorage.setItem("branch-diff-viewer.active-surface", "agent");
+    mocks.openRepository.mockResolvedValue(repository);
+    mocks.compareBranches.mockResolvedValue(comparison);
+    mocks.loadFileDiff.mockResolvedValue(fileDiff);
+
+    render(<App />);
+
+    expect(await screen.findByText("const answer = 42;")).toBeInTheDocument();
+    expect(screen.getByText("Review-only")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Agent board" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Connect Hermes" })).toBeInTheDocument();
+  });
+
+  it("opens the task workspace when Review code targets a different repository", async () => {
+    const sxcl: RepositoryInfo = {
+      ...repository,
+      name: "sxcl-services",
+      path: "/Users/nikhlkapadia/SXCL/sxcl-services",
+    };
+    const olive: RepositoryInfo = {
+      ...repository,
+      name: "api-copilot-mvp",
+      path: "/Users/nikhlkapadia/Olive/api-copilot-mvp",
+    };
+    localStorage.setItem(
+      "branch-diff-viewer.session",
+      JSON.stringify({
+        version: 1,
+        tabs: [{ name: sxcl.name, path: sxcl.path, openMode: "repository" }],
+        activePath: sxcl.path,
+      }),
+    );
+    localStorage.setItem("branch-diff-viewer.active-surface", "agent");
+    Object.assign(hermesMocks.status, {
+      state: "connected",
+      mode: "attached",
+      url: "http://127.0.0.1:9119",
+      version: "0.20.1",
+      activeWorkers: 1,
+      error: null,
+    });
+    mocks.openRepository.mockImplementation((path: string) => Promise.resolve(path === olive.path ? olive : sxcl));
+    mocks.compareBranches.mockResolvedValue(comparison);
+    mocks.loadFileDiff.mockResolvedValue(fileDiff);
+    hermesMocks.listHermesBoards.mockResolvedValue({
+      current: "olive",
+      boards: [{ slug: "olive", name: "Olive", total: 1 }],
+    });
+    hermesMocks.listHermesProfiles.mockResolvedValue({ profiles: [] });
+    hermesMocks.getHermesBoard.mockResolvedValue({
+      columns: [{
+        name: "running",
+        tasks: [{ id: "task-olive", title: "Repair Olive service", status: "running", assignee: "olive" }],
+      }],
+      tenants: [],
+      assignees: ["olive"],
+      latest_event_id: 1,
+      now: 1_700_000_000,
+    });
+    hermesMocks.getHermesTask.mockResolvedValue({
+      task: {
+        id: "task-olive",
+        title: "Repair Olive service",
+        body: "Work only in Olive.",
+        status: "running",
+        assignee: "olive",
+        workspace_path: olive.path,
+      },
+      comments: [],
+      events: [],
+      attachments: [],
+      runs: [],
+      links: { parents: [], children: [] },
+      child_results: [],
+    });
+    hermesMocks.listHermesHomeChannels.mockResolvedValue({ home_channels: [] });
+
+    render(<App />);
+
+    expect(await screen.findByRole("tab", { name: sxcl.name })).toHaveAttribute("aria-selected", "true");
+    fireEvent.click(await screen.findByText("Repair Olive service"));
+    fireEvent.click(await screen.findByRole("button", { name: "Review code" }));
+
+    await waitFor(() => expect(mocks.openRepository).toHaveBeenCalledWith(olive.path));
+    expect(await screen.findByRole("tab", { name: olive.name })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: sxcl.name })).toHaveAttribute("aria-selected", "false");
+    expect(screen.getByRole("button", { name: "Review" })).toHaveAttribute("aria-pressed", "true");
+    expect(await screen.findByRole("button", { name: "Edit" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: sxcl.name }));
+    await waitFor(() => expect(screen.getByRole("tab", { name: sxcl.name })).toHaveAttribute("aria-selected", "true"));
+    expect(within(screen.getByRole("tabpanel")).queryByTitle("Reviewing Repair Olive service")).not.toBeInTheDocument();
   });
 
   it("opens every direct workspace repository as a tab and loads inactive projects lazily", async () => {
@@ -248,6 +447,95 @@ describe("Branch Diff Viewer", () => {
     await waitFor(() => expect(mocks.loadFileDiff).toHaveBeenCalledTimes(1));
   });
 
+  it("shows compare-only commits in a dedicated branch history view", async () => {
+    mocks.dialogOpen.mockResolvedValue(repository.path);
+    mocks.openRepository.mockResolvedValue(repository);
+    mocks.compareBranches.mockResolvedValue(comparison);
+    mocks.loadFileDiff.mockResolvedValue(fileDiff);
+    mocks.listCommits.mockResolvedValue([
+      {
+        id: "c".repeat(40),
+        shortId: "ccccccc",
+        author: "Ada Lovelace",
+        timestamp: 1_700_000_000,
+        subject: "Add guarded editor",
+      },
+      {
+        id: "d".repeat(40),
+        shortId: "ddddddd",
+        author: "Grace Hopper",
+        timestamp: 1_699_900_000,
+        subject: "Connect Hermes board",
+      },
+    ]);
+
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    await screen.findByText("const answer = 42;");
+
+    expect(screen.getByRole("tab", { name: "Commits (2)" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Commits (2)" }));
+    expect(screen.getByRole("heading", { name: "feature compared with main" })).toBeInTheDocument();
+    expect(screen.getByText("Add guarded editor")).toBeInTheDocument();
+    expect(screen.getByText("Ada Lovelace")).toBeInTheDocument();
+    expect(screen.getByText("ccccccc")).toBeInTheDocument();
+    expect(mocks.listCommits).toHaveBeenCalledWith(
+      repository.path,
+      comparison.mergeBase,
+      comparison.compareCommit,
+    );
+  });
+
+  it("reloads the visible patch from the working tree after an editor save", async () => {
+    Object.assign(hermesMocks.status, {
+      state: "connected",
+      mode: "attached",
+      url: "http://127.0.0.1:9119",
+      version: "0.20.1",
+      activeWorkers: 0,
+      error: null,
+    });
+    mocks.dialogOpen.mockResolvedValue(repository.path);
+    mocks.openRepository.mockResolvedValue(repository);
+    mocks.compareBranches.mockResolvedValue(comparison);
+    mocks.loadFileDiff.mockResolvedValue(fileDiff);
+    const workingTreeDiff: FileDiff = {
+      ...fileDiff,
+      hunks: [{
+        header: "@@ -1 +1 @@",
+        lines: [{ kind: "addition", oldLine: null, newLine: 1, content: "const answer = 43;" }],
+      }],
+    };
+    mocks.loadWorkingTreeFileDiff.mockResolvedValue(workingTreeDiff);
+    editorMocks.loadEditableFile.mockResolvedValue({
+      path: "src/example.ts",
+      content: "const answer = 42;",
+      hash: "before",
+    });
+    editorMocks.saveEditableFile.mockResolvedValue({
+      path: "src/example.ts",
+      content: "const answer = 43;",
+      hash: "after",
+    });
+
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    await screen.findByText("const answer = 42;");
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    const editor = await screen.findByRole("textbox", { name: "File contents" });
+    fireEvent.change(editor, { target: { value: "const answer = 43;" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save file" }));
+
+    await waitFor(() => expect(mocks.loadWorkingTreeFileDiff).toHaveBeenCalledWith({
+      repositoryPath: repository.path,
+      mergeBase: comparison.mergeBase,
+      path: "src/example.ts",
+      oldPath: null,
+    }));
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(await screen.findByText("const answer = 43;")).toBeInTheDocument();
+  });
+
   it("wraps diff lines by default and lets the user opt into horizontal scrolling", async () => {
     mocks.dialogOpen.mockResolvedValue(repository.path);
     mocks.openRepository.mockResolvedValue(repository);
@@ -266,6 +554,29 @@ describe("Branch Diff Viewer", () => {
     fireEvent.click(wrapToggle);
     expect(diffView).toHaveClass("no-wrap-lines");
     expect(screen.getByRole("button", { name: "Enable line wrapping" })).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("uses IDE-style syntax tokens and tracks files reviewed for this comparison", async () => {
+    mocks.dialogOpen.mockResolvedValue(repository.path);
+    mocks.openRepository.mockResolvedValue(repository);
+    mocks.compareBranches.mockResolvedValue(comparison);
+    mocks.loadFileDiff.mockResolvedValue(fileDiff);
+
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    await screen.findByText("const answer = 42;");
+
+    expect(document.querySelector(".token.keyword")).toHaveTextContent("const");
+    const reviewed = screen.getByRole("checkbox", { name: "Mark src/example.ts as viewed" });
+    fireEvent.click(reviewed);
+
+    expect(reviewed).toBeChecked();
+    expect(screen.getByText("1 of 2 viewed")).toBeInTheDocument();
+    expect(screen.getByRole("treeitem", { name: /src\/example\.ts/ })).toHaveClass("viewed");
+
+    fireEvent.click(screen.getByRole("treeitem", { name: /assets\/logo\.png/ }));
+    fireEvent.click(screen.getByRole("treeitem", { name: /src\/example\.ts/ }));
+    expect(screen.getByRole("checkbox", { name: "Mark src/example.ts as viewed" })).toBeChecked();
   });
 
   it("resets the diff viewport when a different file is selected", async () => {
@@ -399,7 +710,7 @@ describe("Branch Diff Viewer", () => {
     fireEvent.click(screen.getByRole("button", { name: "Open another project" }));
 
     await waitFor(() => expect(mocks.openRepository).toHaveBeenCalledTimes(2));
-    expect(screen.getAllByRole("tab")).toHaveLength(1);
+    expect(within(screen.getByRole("tablist", { name: "Open projects" })).getAllByRole("tab")).toHaveLength(1);
     expect(mocks.compareBranches).toHaveBeenCalledTimes(1);
   });
 
@@ -564,6 +875,121 @@ describe("Branch Diff Viewer", () => {
     expect(within(screen.getByRole("tabpanel")).queryByText("Comparing branches…")).not.toBeInTheDocument();
     await act(async () => pendingComparison.resolve(comparison));
     expect(within(screen.getByRole("tabpanel")).getByText("No local branches")).toBeInTheDocument();
+  });
+
+  it("moves the selected file with j and k", async () => {
+    mocks.dialogOpen.mockResolvedValue(repository.path);
+    mocks.openRepository.mockResolvedValue(repository);
+    mocks.compareBranches.mockResolvedValue(comparison);
+    mocks.loadFileDiff.mockResolvedValue(fileDiff);
+
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    await screen.findByText("const answer = 42;");
+    fireEvent.click(screen.getByRole("treeitem", { name: /assets\/logo\.png/ }));
+
+    fireEvent.keyDown(window, { key: "j" });
+    expect(screen.getByRole("treeitem", { name: /src\/example\.ts/ })).toHaveAttribute("aria-selected", "true");
+
+    fireEvent.keyDown(window, { key: "k" });
+    expect(screen.getByRole("treeitem", { name: /assets\/logo\.png/ })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("marks the selected file viewed and advances with v", async () => {
+    mocks.dialogOpen.mockResolvedValue(repository.path);
+    mocks.openRepository.mockResolvedValue(repository);
+    mocks.compareBranches.mockResolvedValue(comparison);
+    mocks.loadFileDiff.mockResolvedValue(fileDiff);
+
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    const assetFile = await screen.findByRole("treeitem", { name: /assets\/logo\.png/ });
+    fireEvent.click(assetFile);
+
+    fireEvent.keyDown(window, { key: "v" });
+    expect(assetFile).toHaveClass("viewed");
+    expect(screen.getByRole("treeitem", { name: /src\/example\.ts/ })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("filters changed files and clears the filter with Escape", async () => {
+    mocks.dialogOpen.mockResolvedValue(repository.path);
+    mocks.openRepository.mockResolvedValue(repository);
+    mocks.compareBranches.mockResolvedValue(comparison);
+    mocks.loadFileDiff.mockResolvedValue(fileDiff);
+
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    const filter = await screen.findByRole("textbox", { name: "Filter files" });
+
+    fireEvent.change(filter, { target: { value: "logo" } });
+    expect(screen.getByRole("treeitem", { name: /assets\/logo\.png/ })).toBeInTheDocument();
+    expect(screen.queryByRole("treeitem", { name: /src\/example\.ts/ })).not.toBeInTheDocument();
+
+    fireEvent.keyDown(filter, { key: "Escape" });
+    expect(filter).toHaveValue("");
+    expect(screen.getByRole("treeitem", { name: /src\/example\.ts/ })).toBeInTheDocument();
+  });
+
+  it("shows a stale comparison notice on focus and refreshes on request", async () => {
+    const newerRepository: RepositoryInfo = {
+      ...repository,
+      branches: [
+        { name: "feature", commit: "c".repeat(40) },
+        { name: "main", commit: "a".repeat(40) },
+      ],
+    };
+    mocks.dialogOpen.mockResolvedValue(repository.path);
+    mocks.openRepository
+      .mockResolvedValueOnce(repository)
+      .mockResolvedValueOnce(newerRepository)
+      .mockResolvedValue(repository);
+    mocks.compareBranches.mockResolvedValue(comparison);
+    mocks.loadFileDiff.mockResolvedValue(fileDiff);
+
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    await screen.findByText("const answer = 42;");
+
+    fireEvent.focus(window);
+    expect(await screen.findByText("This comparison is behind the branch.")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Refresh$/ }));
+    await waitFor(() => expect(mocks.compareBranches).toHaveBeenCalledTimes(2));
+  });
+
+  it("restores a stored project view after remounting", async () => {
+    localStorage.setItem(
+      "branch-diff-viewer.session",
+      JSON.stringify({
+        version: 1,
+        tabs: [{ name: repository.name, path: repository.path, openMode: "repository" }],
+        activePath: repository.path,
+      }),
+    );
+    localStorage.setItem(
+      "branch-diff-viewer.project-views.v1",
+      JSON.stringify({
+        [repository.path]: {
+          baseBranch: "feature",
+          compareBranch: "main",
+          selectedPath: "assets/logo.png",
+        },
+      }),
+    );
+    mocks.openRepository.mockResolvedValue(repository);
+    mocks.compareBranches.mockResolvedValue(comparison);
+    mocks.loadFileDiff.mockResolvedValue(fileDiff);
+
+    const firstRender = render(<App />);
+    await screen.findByRole("treeitem", { name: /assets\/logo\.png/ });
+    firstRender.unmount();
+
+    render(<App />);
+    const restoredFile = await screen.findByRole("treeitem", { name: /assets\/logo\.png/ });
+    expect(screen.getByLabelText("Base")).toHaveValue("feature");
+    expect(screen.getByLabelText("Compare")).toHaveValue("main");
+    expect(restoredFile).toHaveAttribute("aria-selected", "true");
+    expect(mocks.compareBranches).toHaveBeenLastCalledWith(repository.path, "feature", "main");
   });
 });
 
