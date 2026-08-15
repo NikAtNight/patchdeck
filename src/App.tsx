@@ -6,6 +6,7 @@ import type { RepositoryInfo, WorkspaceProject } from "./types";
 import { ProjectLoadingPane, ProjectPane } from "./components/ProjectPane";
 import { WelcomeScreen } from "./components/WelcomeScreen";
 import { WorkspaceHeader } from "./components/WorkspaceHeader";
+import { AppUpdater } from "./components/AppUpdater";
 import { ErrorBanner } from "./components/ui";
 import { useHermesConnection } from "./hermes/useHermesConnection";
 import { readReviewTarget, writeReviewTarget } from "./review/inlineComments";
@@ -304,6 +305,7 @@ function App() {
         hermes={hermes}
       />
       <div className="sr-only" aria-live="polite">{workspaceAnnouncement}</div>
+      <AppUpdater />
 
       {tabs.length === 0 ? (
         <WelcomeScreen

@@ -121,6 +121,10 @@
 
   /* Layout */
   --content-header-height: 56px;
+  --content-subheader-height: 35px;
+  --sidebar-width: clamp(260px, 24vw, 360px);
+  --space-control-y: 6px;
+  --space-control-x: 6px;
   --traffic-light-inset: 84px; /* clearance for macOS window controls */
 }
 

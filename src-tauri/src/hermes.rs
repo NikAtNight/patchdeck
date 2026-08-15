@@ -1022,6 +1022,9 @@ fn extract_dashboard_token(html: &str) -> Option<String> {
 // One client per connection: requests reuse its connection pool instead of
 // paying a fresh TCP handshake on every poll.
 fn hermes_client() -> Result<Client, String> {
+    // The updater and reqwest share rustls. Select one provider explicitly so
+    // constructing the Hermes client is stable regardless of feature unification.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     Client::builder()
         .timeout(REQUEST_TIMEOUT)
         .redirect(Policy::none())

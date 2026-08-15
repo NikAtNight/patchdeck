@@ -151,7 +151,7 @@ function FileTreeItem({
           <IndentGuides depth={depth} />
           <span className={`tree-chevron${collapsed ? " collapsed" : ""}`}><ChevronIcon /></span>
           <FolderIcon />
-          <span>{node.name}</span>
+          <span className="tree-node-label">{node.name}</span>
           <span className="tree-count">{node.changedFileCount}</span>
         </div>
         {!collapsed && (

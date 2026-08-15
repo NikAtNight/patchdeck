@@ -80,6 +80,20 @@ cd src-tauri && cargo test
 
 Build a macOS application bundle with `npm run tauri build`.
 
+## Releases and updates
+
+Patchdeck checks the latest public GitHub release when it starts. When a newer signed version is available, an in-app card lets the user download it, install it, and restart. A failed background check stays silent so offline work is not interrupted; an installation failure remains visible and can be retried.
+
+To publish a release:
+
+1. Update the matching version in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`.
+2. Commit and push the release changes.
+3. Push a matching tag such as `v0.5.0`.
+
+The `Release Patchdeck` GitHub Actions workflow builds a universal notarized macOS app and DMG, creates the GitHub release, and uploads `latest.json` plus the signed updater archive. It requires the repository secrets `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`, `TAURI_SIGNING_PRIVATE_KEY`, and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
+
+The updater private key lives outside the repository at `~/.tauri/patchdeck-updater.key`; its password is stored in macOS Keychain under `com.patchdeck.updater-signing`. Keep both backed up. Losing that key prevents installed copies from trusting future releases.
+
 The Rust integration test creates a temporary Git repository, compares a feature branch against `main`, verifies the file and line totals, loads a file diff, and asserts that repository state is unchanged before and after the read flow.
 
 ## Project structure

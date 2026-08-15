@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Patchdeck",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "identifier": "com.local.branchdiffviewer",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -27,9 +27,10 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": "all",
     "macOS": {
-      "signingIdentity": "-"
+      "signingIdentity": "Developer ID Application: Nikhil Kapadia (2TG5HP8NSV)"
     },
     "icon": [
       "icons/32x32.png",
@@ -38,5 +39,13 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE0N0Q2RjJBQTg0OTlBM0UKUldRK21rbW9LbTk5cERONm9GOVZmOTcwd2VEQm1jNEhHUjlVZElycHVFeURMUmdnektFUUVIdWwK",
+      "endpoints": [
+        "https://github.com/NikAtNight/patchdeck/releases/latest/download/latest.json"
+      ]
+    }
   }
 }
