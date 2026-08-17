@@ -24,7 +24,8 @@ export function WelcomeScreen({
         <h1>See the whole change<br />before the pull request.</h1>
         <p className="welcome-copy">
           Compare any two local branches, scan every changed path, and review the exact diff.
-          Connect Hermes when you want the agent board beside the code. Nothing is published automatically.
+          Use the Agent Board for local Codex or Claude work, or connect Hermes for its native boards.
+          Nothing is published automatically.
         </p>
         <div className="welcome-actions">
           <button className="primary-button welcome-action" onClick={onOpenRepository} disabled={opening}>

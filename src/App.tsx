@@ -1,4 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openRepository, openWorkspace, openWorkspaceProject } from "./api";
 import { errorMessage } from "./errors";
@@ -8,6 +9,7 @@ import { WelcomeScreen } from "./components/WelcomeScreen";
 import { WorkspaceHeader } from "./components/WorkspaceHeader";
 import { AppUpdater } from "./components/AppUpdater";
 import { ErrorBanner } from "./components/ui";
+import { SettingsPanel } from "./settings/SettingsPanel";
 import { useHermesConnection } from "./hermes/useHermesConnection";
 import { readReviewTarget, writeReviewTarget } from "./review/inlineComments";
 import type { ReviewTarget } from "./review/inlineComments";
@@ -20,11 +22,13 @@ import {
   writeRecentRepositories,
 } from "./session";
 import type { AppSurface, ProjectTab } from "./session";
+import type { AgentRuntimeEvent } from "./providers/types";
+import { applyAgentRuntimeEvent } from "./localBoard/runtime";
 import "./App.css";
 
-// The agent board carries the Markdown renderer; load it only when opened.
-const HermesBoard = lazy(() =>
-  import("./hermes/HermesBoard").then((module) => ({ default: module.HermesBoard })),
+// The workbench carries board and Markdown renderers; load it only when opened.
+const AgentWorkspace = lazy(() =>
+  import("./localBoard/AgentWorkspace").then((module) => ({ default: module.AgentWorkspace })),
 );
 
 function App() {
@@ -36,18 +40,19 @@ function App() {
   const [openError, setOpenError] = useState<string | null>(null);
   const [workspaceAnnouncement, setWorkspaceAnnouncement] = useState("");
   const [activeSurface, setActiveSurface] = useState<AppSurface>(readAppSurface);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const initialActivePath = initialSession.tabs.find((tab) => tab.id === initialSession.activeTabId)?.path;
   const [reviewTarget, setReviewTarget] = useState<ReviewTarget | null>(() =>
     initialActivePath ? readReviewTarget(initialActivePath) : null
   );
   const hermes = useHermesConnection();
   const agentAttached = hermes.status.state === "connected" || hermes.status.state === "degraded";
-  const visibleSurface: AppSurface = agentAttached ? activeSurface : "review";
   const openRequest = useRef(0);
   const reviewTargetRequest = useRef(0);
   const nextTabId = useRef(initialSession.nextTabId);
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
+  const activeRepositoryPath = tabs.find((tab) => tab.id === activeTabId)?.path ?? null;
 
   useEffect(() => {
     function handleTabShortcut(event: KeyboardEvent) {
@@ -100,6 +105,21 @@ function App() {
   }, [activeSurface]);
 
   useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<AgentRuntimeEvent>("agent-runtime-event", ({ payload }) => {
+      if (!disposed) applyAgentRuntimeEvent(payload);
+    }).then((dispose) => {
+      if (disposed) dispose();
+      else unlisten = dispose;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
     const activePath = tabs.find((tab) => tab.id === activeTabId)?.path;
     setReviewTarget(activePath ? readReviewTarget(activePath) : null);
   }, [activeTabId, tabs]);
@@ -133,6 +153,16 @@ function App() {
     if (!repositoryPath) return;
     setReviewTarget(target);
     writeReviewTarget(repositoryPath, target);
+  }
+
+  function activateRepository(repositoryPath: string) {
+    const existing = tabsRef.current.find((tab) => tab.path === repositoryPath);
+    if (existing) {
+      setActiveTabId(existing.id);
+      focusTabAfterRender(existing.id);
+      return;
+    }
+    void openProject(repositoryPath);
   }
 
   async function chooseRepository() {
@@ -299,13 +329,18 @@ function App() {
         onClose={closeTab}
         onOpenRepository={chooseRepository}
         onOpenWorkspace={chooseWorkspace}
-        activeSurface={visibleSurface}
+        activeSurface={activeSurface}
         onSurfaceChange={setActiveSurface}
-        agentAttached={agentAttached}
-        hermes={hermes}
+        onOpenSettings={() => setSettingsOpen(true)}
       />
       <div className="sr-only" aria-live="polite">{workspaceAnnouncement}</div>
       <AppUpdater />
+      <SettingsPanel
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        repositoryPath={activeRepositoryPath}
+        hermes={hermes}
+      />
 
       {tabs.length === 0 ? (
         <WelcomeScreen
@@ -316,12 +351,13 @@ function App() {
           onOpenWorkspace={chooseWorkspace}
           onOpenRecent={(path) => void openProject(path)}
         />
-      ) : visibleSurface === "agent" ? (
+      ) : activeSurface === "agent" ? (
         <Suspense fallback={<div className="board-loading">Loading agent board…</div>}>
-          <HermesBoard
-            session={hermes}
-            repositoryPath={tabs.find((tab) => tab.id === activeTabId)?.path}
+          <AgentWorkspace
+            hermes={hermes}
+            repositoryPath={activeRepositoryPath ?? undefined}
             onReviewTask={selectReviewTarget}
+            onOpenRepository={activateRepository}
           />
         </Suspense>
       ) : (
@@ -347,9 +383,9 @@ function App() {
               />
             )
           ))}
-          {openError && <div className="workspace-error global"><ErrorBanner message={openError} /></div>}
         </div>
       )}
+      {tabs.length > 0 && openError && <div className="workspace-error global"><ErrorBanner message={openError} /></div>}
     </div>
   );
 }

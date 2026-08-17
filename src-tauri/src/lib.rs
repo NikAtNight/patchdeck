@@ -1,5 +1,7 @@
+mod agent_runtime;
 mod editor;
 mod hermes;
+mod legacy_storage;
 mod repository;
 mod storage;
 mod workspace;
@@ -297,6 +299,76 @@ fn save_review_store(app: tauri::AppHandle, content: String) -> Result<(), Strin
 }
 
 #[tauri::command]
+fn load_local_board_store(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    storage::load_local_board_store(app)
+}
+
+#[tauri::command]
+fn save_local_board_store(app: tauri::AppHandle, content: String) -> Result<(), String> {
+    storage::save_local_board_store(app, content)
+}
+
+#[tauri::command]
+async fn agent_runtime_list(
+    app: tauri::AppHandle,
+) -> Result<Vec<agent_runtime::RuntimeStatus>, String> {
+    tauri::async_runtime::spawn_blocking(move || agent_runtime::list(&app))
+        .await
+        .map_err(|error| format!("Could not inspect agent runtimes: {error}"))
+}
+
+#[tauri::command]
+async fn agent_runtime_connect(
+    app: tauri::AppHandle,
+    runtime_id: agent_runtime::RuntimeId,
+) -> Result<agent_runtime::ConnectionResult, String> {
+    tauri::async_runtime::spawn_blocking(move || agent_runtime::connect(&app, runtime_id))
+        .await
+        .map_err(|error| format!("Agent runtime connection failed: {error}"))?
+}
+
+#[tauri::command]
+async fn agent_runtime_disconnect(
+    app: tauri::AppHandle,
+    runtime_id: agent_runtime::RuntimeId,
+) -> Result<agent_runtime::RuntimeStatus, String> {
+    let worker_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = worker_app.state::<agent_runtime::AgentRuntimeState>();
+        agent_runtime::disconnect(&worker_app, state.inner(), runtime_id)
+    })
+    .await
+    .map_err(|error| format!("Agent runtime disconnect failed: {error}"))?
+}
+
+#[tauri::command]
+async fn agent_runtime_start(
+    app: tauri::AppHandle,
+    request: agent_runtime::StartRequest,
+) -> Result<agent_runtime::StartResult, String> {
+    let worker_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = worker_app.state::<agent_runtime::AgentRuntimeState>();
+        agent_runtime::start(worker_app.clone(), state.inner(), request)
+    })
+    .await
+    .map_err(|error| format!("Agent runtime startup failed: {error}"))?
+}
+
+#[tauri::command]
+fn agent_runtime_stop(
+    app: tauri::AppHandle,
+    runtime_id: agent_runtime::RuntimeId,
+    run_id: String,
+) -> Result<(), String> {
+    agent_runtime::stop(
+        app.state::<agent_runtime::AgentRuntimeState>().inner(),
+        runtime_id,
+        &run_id,
+    )
+}
+
+#[tauri::command]
 fn open_workspace(path: String) -> Result<Vec<WorkspaceProject>, String> {
     workspace::open(&path).map_err(|error| error.to_string())
 }
@@ -349,6 +421,7 @@ fn load_working_tree_file_diff(
 pub fn run() {
     let app = tauri::Builder::default()
         .manage(hermes::HermesState::default())
+        .manage(agent_runtime::AgentRuntimeState::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -382,6 +455,14 @@ pub fn run() {
             list_commits,
             load_review_store,
             save_review_store,
+            load_local_board_store,
+            save_local_board_store,
+            legacy_storage::load_pre_patchdeck_webkit_storage,
+            agent_runtime_list,
+            agent_runtime_connect,
+            agent_runtime_disconnect,
+            agent_runtime_start,
+            agent_runtime_stop,
             open_workspace,
             open_workspace_project,
             compare_branches,
@@ -400,6 +481,13 @@ pub fn run() {
         .expect("error while building Patchdeck");
 
     app.run(|app_handle, event| {
+        if let tauri::RunEvent::Exit = &event {
+            agent_runtime::shutdown(
+                app_handle
+                    .state::<agent_runtime::AgentRuntimeState>()
+                    .inner(),
+            );
+        }
         #[cfg(target_os = "macos")]
         if let tauri::RunEvent::Reopen {
             has_visible_windows: false,

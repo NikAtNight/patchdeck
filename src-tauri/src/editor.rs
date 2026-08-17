@@ -121,7 +121,7 @@ fn content_hash(bytes: &[u8]) -> String {
 fn unique_temp_path(parent: &Path, name: &str) -> PathBuf {
     let sequence = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     parent.join(format!(
-        ".{name}.branch-diff-viewer-{}-{sequence}.tmp",
+        ".{name}.patchdeck-{}-{sequence}.tmp",
         std::process::id()
     ))
 }

@@ -1,8 +1,8 @@
-import type { KeyboardEvent as ReactKeyboardEvent } from "react";
-import type { HermesSessionController } from "../hermes/types";
-import { HermesConnectionControl } from "../hermes/HermesConnectionControl";
+import { isTauri } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from "react";
 import type { AppSurface, ProjectTab } from "../session";
-import { CloseIcon, FolderIcon, PlusIcon, RepositoryIcon, WorkspaceIcon } from "./icons";
+import { CloseIcon, FolderIcon, PlusIcon, RepositoryIcon, SettingsIcon, WorkspaceIcon } from "./icons";
 import { Spinner } from "./ui";
 
 export function WorkspaceHeader({
@@ -15,8 +15,7 @@ export function WorkspaceHeader({
   onClose,
   activeSurface,
   onSurfaceChange,
-  agentAttached,
-  hermes,
+  onOpenSettings,
 }: {
   tabs: ProjectTab[];
   activeTabId: string | null;
@@ -27,15 +26,15 @@ export function WorkspaceHeader({
   onClose: (id: string) => void;
   activeSurface: AppSurface;
   onSurfaceChange: (surface: AppSurface) => void;
-  agentAttached: boolean;
-  hermes: HermesSessionController;
+  onOpenSettings: () => void;
 }) {
   return (
-    // data-tauri-drag-region lets the header act as the macOS titlebar under
-    // the overlay title-bar style; child controls stay clickable.
-    <header className="app-header" data-tauri-drag-region>
+    // Use one explicit native drag path. Combining this with Tauri's
+    // declarative drag marker can dispatch two drag requests per mouse-down.
+    <header className="app-header" onMouseDown={startHeaderDrag}>
+      <div className="window-drag-handle" />
       {tabs.length > 0 && (
-        <div className="project-tabs" role="tablist" aria-label="Open projects" data-tauri-drag-region>
+        <div className="project-tabs" role="tablist" aria-label="Open projects">
           {tabs.map((tab, index) => (
             <div className={`project-tab${tab.id === activeTabId ? " active" : ""}`} key={tab.id} title={tab.path}>
               <button
@@ -67,7 +66,7 @@ export function WorkspaceHeader({
           </button>
         </div>
       )}
-      {tabs.length > 0 && agentAttached && (
+      {tabs.length > 0 && (
         <nav className="surface-switch" aria-label="Workspace surface">
           <button className={activeSurface === "review" ? "active" : ""} aria-pressed={activeSurface === "review"} onClick={() => onSurfaceChange("review")}>Review</button>
           <button className={activeSurface === "agent" ? "active" : ""} aria-pressed={activeSurface === "agent"} onClick={() => onSurfaceChange("agent")}>Agent board</button>
@@ -83,9 +82,22 @@ export function WorkspaceHeader({
           </button>
         </div>
       )}
-      <HermesConnectionControl session={hermes} />
+      <div className="header-tools">
+        <button className="icon-button header-settings-button" onClick={onOpenSettings} aria-label="Settings" title="Settings">
+          <SettingsIcon />
+        </button>
+      </div>
     </header>
   );
+}
+
+function startHeaderDrag(event: ReactMouseEvent<HTMLElement>) {
+  if (event.button !== 0 || !isTauri()) return;
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+  if (target.closest(".header-tools, button, input, select, textarea, a, [role='tab']")) return;
+  event.preventDefault();
+  void getCurrentWindow().startDragging().catch(() => {});
 }
 
 function handleTabNavigation(event: ReactKeyboardEvent<HTMLButtonElement>, index: number) {

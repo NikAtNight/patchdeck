@@ -1,12 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { InlineReviewComment, ReviewTarget } from "./inlineComments";
 
-export const COMMENTS_KEY = "branch-diff-viewer.inline-review-comments.v1";
-export const TARGET_KEY = "branch-diff-viewer.review-target.v1";
-export const REVIEWED_FILES_KEY = "branch-diff-viewer.reviewed-files.v1";
+export const COMMENTS_KEY = "patchdeck.inline-review-comments.v1";
+export const TARGET_KEY = "patchdeck.review-target.v1";
+export const REVIEWED_FILES_KEY = "patchdeck.reviewed-files.v1";
 // Full-document localStorage mirror, so startup can pick whichever copy
 // (native file or mirror) carries the newest write.
-export const MIRROR_KEY = "branch-diff-viewer.review-store.v1";
+export const MIRROR_KEY = "patchdeck.review-store.v1";
+const PRE_PATCHDECK_STORAGE_PREFIX = ["branch", "diff", "viewer"].join("-");
 
 // Stay under the backend's 5 MB save limit with room for growth between
 // prunes; oversized documents are trimmed before persisting.
@@ -233,7 +234,7 @@ function sanitizeReviewedFiles(value: unknown): Record<string, string[]> {
 
 function readLegacyJson(key: string): unknown {
   try {
-    return JSON.parse(localStorage.getItem(key) ?? "null");
+    return JSON.parse(readStorageValue(key) ?? "null");
   } catch {
     return null;
   }
@@ -241,10 +242,21 @@ function readLegacyJson(key: string): unknown {
 
 function hasLegacyValues() {
   try {
-    return [COMMENTS_KEY, TARGET_KEY, REVIEWED_FILES_KEY].some((key) => localStorage.getItem(key) !== null);
+    return [COMMENTS_KEY, TARGET_KEY, REVIEWED_FILES_KEY].some((key) => readStorageValue(key) !== null);
   } catch {
     return false;
   }
+}
+
+function readStorageValue(key: string): string | null {
+  const current = localStorage.getItem(key);
+  if (current !== null) return current;
+  const legacyKey = `${PRE_PATCHDECK_STORAGE_PREFIX}${key.slice("patchdeck".length)}`;
+  const legacy = localStorage.getItem(legacyKey);
+  if (legacy === null) return null;
+  localStorage.setItem(key, legacy);
+  localStorage.removeItem(legacyKey);
+  return legacy;
 }
 
 function writeLegacyValue(key: string, value: string) {

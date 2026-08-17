@@ -4,10 +4,11 @@ const invoke = vi.hoisted(() => vi.fn());
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 
-const commentsKey = "branch-diff-viewer.inline-review-comments.v1";
-const targetKey = "branch-diff-viewer.review-target.v1";
-const reviewedFilesKey = "branch-diff-viewer.reviewed-files.v1";
-const mirrorKey = "branch-diff-viewer.review-store.v1";
+const commentsKey = "patchdeck.inline-review-comments.v1";
+const targetKey = "patchdeck.review-target.v1";
+const reviewedFilesKey = "patchdeck.reviewed-files.v1";
+const mirrorKey = "patchdeck.review-store.v1";
+const prePatchdeckPrefix = ["branch", "diff", "viewer"].join("-");
 
 const target = {
   board: "product",
@@ -120,6 +121,25 @@ describe("review store", () => {
       reviewTargets: { [target.repositoryPath]: target },
       reviewedFiles: {},
     });
+  });
+
+  it("migrates the pre-Patchdeck local mirror into the Patchdeck namespace", async () => {
+    const legacyMirrorKey = `${prePatchdeckPrefix}.review-store.v1`;
+    localStorage.setItem(legacyMirrorKey, JSON.stringify({
+      version: 2,
+      updatedAt: 10,
+      inlineComments: [comment],
+      reviewTargets: { [target.repositoryPath]: target },
+      reviewedFiles: {},
+    }));
+    invoke.mockResolvedValue(null);
+
+    const store = await loadReviewModules();
+    await store.initReviewStore();
+
+    expect(store.readStoredInlineComments()).toEqual([comment]);
+    expect(localStorage.getItem(mirrorKey)).not.toBeNull();
+    expect(localStorage.getItem(legacyMirrorKey)).toBeNull();
   });
 
   it("keeps synchronous reads consistent with writes", async () => {

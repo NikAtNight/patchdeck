@@ -19,7 +19,7 @@ export function AppUpdater() {
   const activeUpdate = useRef<Update | null>(null);
 
   useEffect(() => {
-    if (!isTauri()) return;
+    if (import.meta.env.MODE === "development" || !isTauri()) return;
 
     let cancelled = false;
     void check({ timeout: 15_000 })
