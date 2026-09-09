@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import "@testing-library/jest-dom/vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
+import { createLocalCard, resetLocalBoardStore } from "./localBoard/store";
 import { resetReviewStore } from "./review/reviewStore";
 import type { Comparison, FileDiff, RepositoryInfo } from "./types";
 
@@ -54,10 +55,21 @@ const editorMocks = vi.hoisted(() => ({
   saveEditableFile: vi.fn(),
 }));
 
-vi.mock("@tauri-apps/plugin-dialog", () => ({ open: mocks.dialogOpen }));
-vi.mock("@tauri-apps/api/event", () => ({
-  listen: vi.fn().mockResolvedValue(() => {}),
+const providerMocks = vi.hoisted(() => ({
+  listAgentRuntimes: vi.fn(),
+  connectAgentRuntime: vi.fn(),
+  disconnectAgentRuntime: vi.fn(),
+  startAgentRuntime: vi.fn(),
+  stopAgentRuntime: vi.fn(),
 }));
+
+const eventMocks = vi.hoisted(() => ({
+  listen: vi.fn(),
+  dispose: vi.fn(),
+}));
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: mocks.dialogOpen }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: eventMocks.listen }));
 vi.mock("./api", () => ({
   openRepository: mocks.openRepository,
   openWorkspace: mocks.openWorkspace,
@@ -97,6 +109,7 @@ vi.mock("./hermes/api", () => ({
   unsubscribeHermesEvents: hermesMocks.unsubscribeHermesEvents,
 }));
 vi.mock("./editor/api", () => editorMocks);
+vi.mock("./providers/api", () => providerMocks);
 
 const repository: RepositoryInfo = {
   name: "example",
@@ -156,6 +169,7 @@ const fileDiff: FileDiff = {
 describe("Patchdeck", () => {
   beforeEach(() => {
     localStorage.clear();
+    resetLocalBoardStore();
     resetReviewStore();
     mocks.dialogOpen.mockReset();
     mocks.openRepository.mockReset();
@@ -168,6 +182,39 @@ describe("Patchdeck", () => {
     mocks.listCommits.mockResolvedValue([]);
     editorMocks.loadEditableFile.mockReset();
     editorMocks.saveEditableFile.mockReset();
+    providerMocks.listAgentRuntimes.mockReset();
+    providerMocks.connectAgentRuntime.mockReset();
+    providerMocks.disconnectAgentRuntime.mockReset();
+    providerMocks.startAgentRuntime.mockReset();
+    providerMocks.stopAgentRuntime.mockReset();
+    eventMocks.dispose.mockReset();
+    eventMocks.listen.mockReset().mockResolvedValue(eventMocks.dispose);
+    providerMocks.listAgentRuntimes.mockResolvedValue([
+      {
+        id: "codex",
+        label: "Codex",
+        installed: true,
+        authenticated: true,
+        ready: true,
+        version: "codex-cli test",
+        path: "/usr/local/bin/codex",
+        authMode: "ChatGPT",
+        accountLabel: "Test account",
+        error: null,
+      },
+      {
+        id: "claude",
+        label: "Claude Code",
+        installed: true,
+        authenticated: true,
+        ready: true,
+        version: "claude test",
+        path: "/usr/local/bin/claude",
+        authMode: "claude.ai",
+        accountLabel: "Test account",
+        error: null,
+      },
+    ]);
     Object.assign(hermesMocks.status, {
       state: "disconnected",
       mode: null,
@@ -186,17 +233,33 @@ describe("Patchdeck", () => {
 
   it("starts with a local-only repository prompt", () => {
     render(<App />);
-    expect(screen.getByRole("heading", { name: /see the whole change/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /welcome to patchdeck/i })).toBeInTheDocument();
     expect(screen.queryByText("Branch Diff")).not.toBeInTheDocument();
     expect(screen.getByText(/nothing is published automatically/i)).toBeInTheDocument();
-    expect(screen.getByText(/local-first/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Connect Hermes" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Connect Hermes" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Open a workspace" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Settings" })).toBeInTheDocument();
+  });
+
+  it("opens global settings from the header", async () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    const dialog = screen.getByRole("dialog", { name: "Settings" });
+    expect(dialog).toBeInTheDocument();
+    expect(await within(dialog).findByRole("article", { name: "Codex" })).toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "About" }));
+    expect(within(dialog).getByRole("heading", { name: "Patchdeck Local" })).toBeInTheDocument();
+    expect(within(dialog).getByText("Development")).toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close settings" }));
+    expect(screen.queryByRole("dialog", { name: "Settings" })).not.toBeInTheDocument();
   });
 
   it("restores the last active project instead of showing the landing screen", async () => {
     localStorage.setItem(
-      "branch-diff-viewer.session",
+      "patchdeck.session",
       JSON.stringify({
         version: 1,
         tabs: [
@@ -212,34 +275,132 @@ describe("Patchdeck", () => {
 
     render(<App />);
 
-    expect(screen.queryByRole("heading", { name: /see the whole change/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /welcome to patchdeck/i })).not.toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "other" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "example" })).toHaveAttribute("aria-selected", "true");
     await waitFor(() => expect(mocks.openRepository).toHaveBeenCalledWith(repository.path));
     expect(mocks.openRepository).toHaveBeenCalledTimes(1);
   });
 
-  it("stays review-only when no Hermes agent is attached", async () => {
+  it("opens the local board when no Hermes agent is attached", async () => {
     localStorage.setItem(
-      "branch-diff-viewer.session",
+      "patchdeck.session",
       JSON.stringify({
         version: 1,
         tabs: [{ name: repository.name, path: repository.path, openMode: "repository" }],
         activePath: repository.path,
       }),
     );
-    localStorage.setItem("branch-diff-viewer.active-surface", "agent");
+    localStorage.setItem("patchdeck.active-surface", "agent");
     mocks.openRepository.mockResolvedValue(repository);
     mocks.compareBranches.mockResolvedValue(comparison);
     mocks.loadFileDiff.mockResolvedValue(fileDiff);
 
     render(<App />);
 
-    expect(await screen.findByText("const answer = 42;")).toBeInTheDocument();
-    expect(screen.getByText("Review-only")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Agent board" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Connect Hermes" })).toBeInTheDocument();
+    expect(await screen.findByText("Local board")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Agent board" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "New work" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Connect Hermes" })).not.toBeInTheDocument();
+  });
+
+  it("keeps recording runtime events while the user reviews code", async () => {
+    localStorage.setItem(
+      "patchdeck.session",
+      JSON.stringify({
+        version: 1,
+        tabs: [{ name: repository.name, path: repository.path, openMode: "repository" }],
+        activePath: repository.path,
+      }),
+    );
+    localStorage.setItem("patchdeck.active-surface", "agent");
+    mocks.openRepository.mockResolvedValue(repository);
+    mocks.compareBranches.mockResolvedValue(comparison);
+    mocks.loadFileDiff.mockResolvedValue(fileDiff);
+    providerMocks.startAgentRuntime.mockResolvedValue({ sessionId: "session-review", turnId: "turn-review" });
+
+    render(<App />);
+
+    await screen.findByText("Local board");
+    fireEvent.click(screen.getByRole("button", { name: "+ New work" }));
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Track background run" } });
+    fireEvent.click(await screen.findByRole("button", { name: "Create & run" }));
+    await waitFor(() => expect(providerMocks.startAgentRuntime).toHaveBeenCalled());
+    await waitFor(() => expect(eventMocks.listen).toHaveBeenCalledWith("agent-runtime-event", expect.any(Function)));
+    const runId = providerMocks.startAgentRuntime.mock.calls[0][0].runId;
+    const receiveRuntimeEvent = eventMocks.listen.mock.calls[0][1];
+
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    act(() => receiveRuntimeEvent({
+      payload: { runtimeId: "codex", runId, type: "agentDelta", delta: "Finished while review was open." },
+    }));
+    fireEvent.click(screen.getByRole("button", { name: "Agent board" }));
+    fireEvent.click(await screen.findByText("Track background run"));
+
+    expect(await screen.findByText("Finished while review was open.")).toBeInTheDocument();
+  });
+
+  it("opens a local card's repository from All Work before running it", async () => {
+    const otherRepository: RepositoryInfo = {
+      ...repository,
+      name: "other",
+      path: "/work/other",
+    };
+    localStorage.setItem(
+      "patchdeck.session",
+      JSON.stringify({
+        version: 1,
+        tabs: [{ name: repository.name, path: repository.path, openMode: "repository" }],
+        activePath: repository.path,
+      }),
+    );
+    localStorage.setItem("patchdeck.active-surface", "agent");
+    createLocalCard({ repositoryPath: otherRepository.path, title: "Run in the other repository" });
+    mocks.openRepository.mockImplementation((path: string) => Promise.resolve(path === otherRepository.path ? otherRepository : repository));
+    mocks.compareBranches.mockResolvedValue(comparison);
+    mocks.loadFileDiff.mockResolvedValue(fileDiff);
+    providerMocks.startAgentRuntime.mockResolvedValue({ sessionId: "session-other", turnId: "turn-other" });
+
+    render(<App />);
+
+    const navigator = await screen.findByRole("navigation", { name: "Board navigator" });
+    fireEvent.click(within(navigator).getByRole("button", { name: "All Work" }));
+    fireEvent.click(screen.getByText("Run in the other repository"));
+
+    await waitFor(() => expect(mocks.openRepository).toHaveBeenCalledWith(otherRepository.path));
+    expect(await screen.findByRole("tab", { name: "other" })).toHaveAttribute("aria-selected", "true");
+    expect(await screen.findByRole("complementary", { name: "Run in the other repository card details" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Run with Codex" }));
+    await waitFor(() => expect(providerMocks.startAgentRuntime).toHaveBeenCalledWith(expect.objectContaining({
+      repositoryPath: otherRepository.path,
+    })));
+  });
+
+  it("shows a failed All Work repository open without leaving the Agent Board", async () => {
+    const missingRepositoryPath = "/work/missing";
+    localStorage.setItem(
+      "patchdeck.session",
+      JSON.stringify({
+        version: 1,
+        tabs: [{ name: repository.name, path: repository.path, openMode: "repository" }],
+        activePath: repository.path,
+      }),
+    );
+    localStorage.setItem("patchdeck.active-surface", "agent");
+    createLocalCard({ repositoryPath: missingRepositoryPath, title: "Work in a missing repository" });
+    mocks.openRepository.mockImplementation((path: string) => path === missingRepositoryPath
+      ? Promise.reject(new Error("Could not open the card repository"))
+      : Promise.resolve(repository));
+
+    render(<App />);
+
+    const navigator = await screen.findByRole("navigation", { name: "Board navigator" });
+    fireEvent.click(within(navigator).getByRole("button", { name: "All Work" }));
+    fireEvent.click(screen.getByText("Work in a missing repository"));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not open the card repository");
+    expect(screen.getByRole("button", { name: "Agent board" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("navigation", { name: "Board navigator" })).toBeInTheDocument();
   });
 
   it("opens the task workspace when Review code targets a different repository", async () => {
@@ -254,14 +415,14 @@ describe("Patchdeck", () => {
       path: "/Users/nikhlkapadia/Olive/api-copilot-mvp",
     };
     localStorage.setItem(
-      "branch-diff-viewer.session",
+      "patchdeck.session",
       JSON.stringify({
         version: 1,
         tabs: [{ name: sxcl.name, path: sxcl.path, openMode: "repository" }],
         activePath: sxcl.path,
       }),
     );
-    localStorage.setItem("branch-diff-viewer.active-surface", "agent");
+    localStorage.setItem("patchdeck.active-surface", "agent");
     Object.assign(hermesMocks.status, {
       state: "connected",
       mode: "attached",
@@ -307,6 +468,8 @@ describe("Patchdeck", () => {
     hermesMocks.listHermesHomeChannels.mockResolvedValue({ home_channels: [] });
 
     render(<App />);
+
+    fireEvent.click(within(await screen.findByRole("navigation", { name: "Board navigator" })).getByRole("button", { name: "Hermes · Olive" }));
 
     expect(await screen.findByRole("tab", { name: sxcl.name })).toHaveAttribute("aria-selected", "true");
     fireEvent.click(await screen.findByText("Repair Olive service"));
@@ -359,7 +522,7 @@ describe("Patchdeck", () => {
     await waitFor(() => expect(mocks.openWorkspaceProject).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(mocks.compareBranches).toHaveBeenCalledTimes(2));
     expect(mocks.compareBranches).toHaveBeenLastCalledWith(otherRepository.path, "main", "feature");
-    await waitFor(() => expect(JSON.parse(localStorage.getItem("branch-diff-viewer.session") ?? "null")).toEqual({
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("patchdeck.session") ?? "null")).toEqual({
       version: 1,
       tabs: [
         { name: repository.name, path: repository.path, openMode: "workspace" },
@@ -371,7 +534,7 @@ describe("Patchdeck", () => {
 
   it("restores workspace projects through the exact-root workspace boundary", async () => {
     localStorage.setItem(
-      "branch-diff-viewer.session",
+      "patchdeck.session",
       JSON.stringify({
         version: 1,
         tabs: [{ name: repository.name, path: repository.path, openMode: "workspace" }],
@@ -435,7 +598,7 @@ describe("Patchdeck", () => {
     mocks.loadFileDiff.mockResolvedValue(fileDiff);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
 
     expect(await screen.findByText("files changed")).toBeInTheDocument();
     expect(screen.queryByText("Branch Diff")).not.toBeInTheDocument();
@@ -470,7 +633,7 @@ describe("Patchdeck", () => {
     ]);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
     await screen.findByText("const answer = 42;");
 
     expect(screen.getByRole("tab", { name: "Commits (2)" })).toBeInTheDocument();
@@ -519,7 +682,7 @@ describe("Patchdeck", () => {
     });
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
     await screen.findByText("const answer = 42;");
     fireEvent.click(screen.getByRole("button", { name: "Edit" }));
     const editor = await screen.findByRole("textbox", { name: "File contents" });
@@ -543,7 +706,7 @@ describe("Patchdeck", () => {
     mocks.loadFileDiff.mockResolvedValue(fileDiff);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
     await screen.findByText("const answer = 42;");
 
     const diffView = screen.getByLabelText("File diff").querySelector(".diff-view");
@@ -563,7 +726,7 @@ describe("Patchdeck", () => {
     mocks.loadFileDiff.mockResolvedValue(fileDiff);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
     await screen.findByText("const answer = 42;");
 
     expect(document.querySelector(".token.keyword")).toHaveTextContent("const");
@@ -586,7 +749,7 @@ describe("Patchdeck", () => {
     mocks.loadFileDiff.mockResolvedValue(fileDiff);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
     await screen.findByText("const answer = 42;");
     const firstViewport = document.querySelector<HTMLElement>(".diff-scroll");
     if (!firstViewport) throw new Error("Expected a diff viewport");
@@ -608,7 +771,7 @@ describe("Patchdeck", () => {
     mocks.loadFileDiff.mockResolvedValue(fileDiff);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
     await screen.findByText("files changed");
     await screen.findByText("const answer = 42;");
     fireEvent.click(screen.getByRole("treeitem", { name: /assets\/logo\.png/ }));
@@ -624,7 +787,7 @@ describe("Patchdeck", () => {
     mocks.loadFileDiff.mockResolvedValue(fileDiff);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
 
     const srcFolder = await screen.findByRole("treeitem", { name: "src, 1 changed file" });
     expect(screen.getByRole("treeitem", { name: /src\/example\.ts/ })).toBeVisible();
@@ -642,7 +805,7 @@ describe("Patchdeck", () => {
     mocks.loadFileDiff.mockResolvedValue(fileDiff);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
     const srcFolder = await screen.findByRole("treeitem", { name: "src, 1 changed file" });
     fireEvent.click(srcFolder);
     fireEvent.click(screen.getByRole("button", { name: "Refresh comparison" }));
@@ -682,7 +845,7 @@ describe("Patchdeck", () => {
     mocks.loadFileDiff.mockResolvedValue(fileDiff);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
     await screen.findByRole("treeitem", { name: /assets\/logo\.png/ });
     fireEvent.click(screen.getByRole("treeitem", { name: /assets\/logo\.png/ }));
     expect(await screen.findByRole("heading", { name: "Binary file" })).toBeInTheDocument();
@@ -705,7 +868,7 @@ describe("Patchdeck", () => {
     mocks.loadFileDiff.mockResolvedValue(fileDiff);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
     await screen.findByRole("tab", { name: "example" });
     fireEvent.click(screen.getByRole("button", { name: "Open another project" }));
 
@@ -726,7 +889,7 @@ describe("Patchdeck", () => {
     mocks.loadFileDiff.mockResolvedValue(fileDiff);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
     await screen.findByRole("tab", { name: "example" });
     fireEvent.click(screen.getByRole("button", { name: "Open another project" }));
     fireEvent.click(screen.getByRole("button", { name: "Close example" }));
@@ -743,7 +906,7 @@ describe("Patchdeck", () => {
     mocks.loadFileDiff.mockResolvedValue(fileDiff);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
     await screen.findByRole("tab", { name: "example" });
     fireEvent.click(screen.getByRole("button", { name: "Close example" }));
 
@@ -761,7 +924,7 @@ describe("Patchdeck", () => {
     });
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
 
     expect(await screen.findByRole("heading", { name: /nothing to compare yet/i })).toBeInTheDocument();
     expect(screen.getByText("No local branches")).toBeInTheDocument();
@@ -777,7 +940,7 @@ describe("Patchdeck", () => {
       .mockResolvedValue(fileDiff);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
 
     expect(await screen.findByRole("heading", { name: "Could not load this diff" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
@@ -791,7 +954,7 @@ describe("Patchdeck", () => {
     mocks.compareBranches.mockRejectedValue(new Error("Branches have no common ancestor"));
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("no common ancestor");
     expect(screen.queryByText("No changed files")).not.toBeInTheDocument();
@@ -812,7 +975,7 @@ describe("Patchdeck", () => {
     mocks.loadFileDiff.mockResolvedValue(fileDiff);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
     await screen.findByText("files changed");
     fireEvent.click(screen.getByRole("button", { name: "Refresh comparison" }));
 
@@ -823,7 +986,7 @@ describe("Patchdeck", () => {
 
   it("ignores a stale repository response after a newer open completes", async () => {
     localStorage.setItem(
-      "branch-diff-viewer.recent-repositories",
+      "patchdeck.recent-repositories",
       JSON.stringify(["/work/repo-a", "/work/repo-b"]),
     );
     const first = deferred<RepositoryInfo>();
@@ -867,7 +1030,7 @@ describe("Patchdeck", () => {
     mocks.loadFileDiff.mockResolvedValue(fileDiff);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
     expect(await screen.findByText("Comparing branches…")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Open another project" }));
 
@@ -877,6 +1040,54 @@ describe("Patchdeck", () => {
     expect(within(screen.getByRole("tabpanel")).getByText("No local branches")).toBeInTheDocument();
   });
 
+  it("keeps Settings isolated from review keyboard shortcuts", async () => {
+    mocks.dialogOpen.mockResolvedValue(repository.path);
+    mocks.openRepository.mockResolvedValue(repository);
+    mocks.compareBranches.mockResolvedValue(comparison);
+    mocks.loadFileDiff.mockResolvedValue(fileDiff);
+
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
+    const assetFile = await screen.findByRole("treeitem", { name: /assets\/logo\.png/ });
+    fireEvent.click(assetFile);
+    const filter = screen.getByRole("textbox", { name: "Filter files" });
+    const settingsButton = screen.getByRole("button", { name: "Settings" });
+    settingsButton.focus();
+    fireEvent.click(settingsButton);
+    const dialog = screen.getByRole("dialog", { name: "Settings" });
+    const close = within(dialog).getByRole("button", { name: "Close settings" });
+    expect(close).toHaveFocus();
+
+    fireEvent.keyDown(close, { key: "f", metaKey: true });
+    expect(close).toHaveFocus();
+    expect(filter).not.toHaveFocus();
+    fireEvent.keyDown(close, { key: "j" });
+    fireEvent.keyDown(close, { key: "v" });
+    expect(assetFile).toHaveAttribute("aria-selected", "true");
+    expect(assetFile).not.toHaveClass("viewed");
+    expect(settingsButton.closest(".app-shell")).toHaveAttribute("inert");
+
+    fireEvent.keyDown(close, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Settings" })).not.toBeInTheDocument();
+    expect(settingsButton).toHaveFocus();
+    fireEvent.keyDown(settingsButton, { key: "f", metaKey: true });
+    expect(filter).toHaveFocus();
+  });
+
+  it("opens Settings and repositories with standard Mac shortcuts", async () => {
+    mocks.dialogOpen.mockResolvedValue(null);
+    render(<App />);
+    fireEvent.keyDown(window, { key: ",", metaKey: true });
+    const dialog = screen.getByRole("dialog", { name: "Settings" });
+    fireEvent.keyDown(window, { key: "o", metaKey: true });
+    expect(mocks.dialogOpen).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close settings" }));
+    fireEvent.keyDown(window, { key: "o", metaKey: true });
+    await waitFor(() => expect(mocks.dialogOpen).toHaveBeenCalledWith({
+      directory: true, multiple: false, title: "Open Git repository",
+    }));
+  });
+
   it("moves the selected file with j and k", async () => {
     mocks.dialogOpen.mockResolvedValue(repository.path);
     mocks.openRepository.mockResolvedValue(repository);
@@ -884,7 +1095,7 @@ describe("Patchdeck", () => {
     mocks.loadFileDiff.mockResolvedValue(fileDiff);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
     await screen.findByText("const answer = 42;");
     fireEvent.click(screen.getByRole("treeitem", { name: /assets\/logo\.png/ }));
 
@@ -902,7 +1113,7 @@ describe("Patchdeck", () => {
     mocks.loadFileDiff.mockResolvedValue(fileDiff);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
     const assetFile = await screen.findByRole("treeitem", { name: /assets\/logo\.png/ });
     fireEvent.click(assetFile);
 
@@ -918,7 +1129,7 @@ describe("Patchdeck", () => {
     mocks.loadFileDiff.mockResolvedValue(fileDiff);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
     const filter = await screen.findByRole("textbox", { name: "Filter files" });
 
     fireEvent.change(filter, { target: { value: "logo" } });
@@ -947,7 +1158,7 @@ describe("Patchdeck", () => {
     mocks.loadFileDiff.mockResolvedValue(fileDiff);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
     await screen.findByText("const answer = 42;");
 
     fireEvent.focus(window);
@@ -959,7 +1170,7 @@ describe("Patchdeck", () => {
 
   it("restores a stored project view after remounting", async () => {
     localStorage.setItem(
-      "branch-diff-viewer.session",
+      "patchdeck.session",
       JSON.stringify({
         version: 1,
         tabs: [{ name: repository.name, path: repository.path, openMode: "repository" }],
@@ -967,7 +1178,7 @@ describe("Patchdeck", () => {
       }),
     );
     localStorage.setItem(
-      "branch-diff-viewer.project-views.v1",
+      "patchdeck.project-views.v1",
       JSON.stringify({
         [repository.path]: {
           baseBranch: "feature",

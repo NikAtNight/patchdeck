@@ -5,10 +5,14 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "local": "node scripts/local-app.mjs run",
+    "local:install": "node scripts/local-app.mjs install",
     "build": "tsc && vite build",
+    "build:dev": "tsc && vite build --mode development",
     "test": "vitest run --environment jsdom",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "tauri:build:dev": "tauri build --debug --config src-tauri/tauri.dev.conf.json"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

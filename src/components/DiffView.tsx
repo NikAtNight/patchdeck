@@ -69,12 +69,12 @@ export function DiffView({
   }
 
   return (
-    <div className={`diff-view${wrapLines ? " wrap-lines" : " no-wrap-lines"}`}>
+    <div className={`diff-view${wrapLines ? " wrap-lines" : " no-wrap-lines"}${reviewTarget ? " has-review-comments" : ""}`}>
       <header className="file-header">
         <div className="file-title-row">
-          <StatusBadge status={file.status} />
+          <StatusBadge status={file.status} compact />
           <div className="file-title">
-            <div>{file.path}</div>
+            <div title={file.path}>{file.path}</div>
             {file.oldPath && <span>renamed from {file.oldPath}</span>}
           </div>
         </div>
@@ -185,11 +185,12 @@ function DiffHunk({
                 <div className={`diff-line ${line.kind}`}>
                   <span className="line-number" aria-label={line.oldLine ? `Old line ${line.oldLine}` : undefined}>{line.oldLine ?? ""}</span>
                   <span className="line-number" aria-label={line.newLine ? `New line ${line.newLine}` : undefined}>{line.newLine ?? ""}</span>
-                  <span className="line-marker">
-                    {reviewTarget && anchor ? (
+                  {reviewTarget && <span className="line-comment-action">
+                    {anchor && (
                       <button className="line-comment-button" aria-label={`Comment on ${side} line ${lineNumber}`} title="Add review comment" onClick={() => onSetCommentAnchor(anchor)}>+</button>
-                    ) : lineMarker(line.kind)}
-                  </span>
+                    )}
+                  </span>}
+                  <span className="line-marker">{lineMarker(line.kind)}</span>
                   <code><span className="sr-only">{line.content || " "}</span><span aria-hidden="true">{lineTokens.map(({ inRange, ...token }, tokenIndex) => {
                     const tokenProps = getTokenProps({ token });
                     return <span key={tokenIndex} {...tokenProps} className={`${tokenProps.className ?? ""}${inRange ? " intraline" : ""}`} />;

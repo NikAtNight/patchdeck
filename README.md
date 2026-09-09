@@ -1,6 +1,6 @@
 # Patchdeck
 
-A local-first desktop app for reviewing committed changes between Git branches and operating the native Hermes Agent Kanban beside the code. It provides a pull-request-style file tree, line counts, unified diffs, task lanes, agent activity, runs, logs, and human-to-agent comments without automatically publishing code.
+A local-first desktop app for reviewing committed changes between Git branches and running agent work beside the code. It provides a pull-request-style file tree, line counts, unified diffs, a persistent local Kanban, Codex and Claude Code conversations, and optional Hermes boards without automatically publishing code.
 
 The MVP targets macOS. It is built with Tauri 2, React, TypeScript, and Rust.
 
@@ -24,7 +24,12 @@ The MVP targets macOS. It is built with Tauri 2, React, TypeScript, and Rust.
 - Remembers up to five recent repository paths on the local machine.
 - Discovers a running local Hermes dashboard on its standard ports, starts a managed `hermes serve` process, or attaches to another loopback server with a session token.
 - Shows Hermes connection health and active worker count in the top-right.
-- Operates as a review-only branch viewer while Hermes is disconnected; Agent Board, task feedback, and editing controls appear only for an attached agent session.
+- Keeps a repository-scoped local Kanban available when Hermes is disconnected, with To do, In progress, Review, and Done lanes.
+- Routes local cards through reusable Codex or Claude Code execution profiles and streams normalized agent messages and activity back into the card drawer.
+- Separates each new card's destination from its executor: Patchdeck can own it locally, or Hermes can own it on a named board with a Hermes profile or dispatcher assignment.
+- Navigates the Local Board, every named Hermes board, a repository-scoped projection, and a federated All Work projection without copying source records.
+- Sends a local card to Hermes only through an explicit handoff that preserves the local card and its conversation.
+- Opens a global Settings panel for coding-agent connections, Hermes orchestration, execution profiles, safety boundaries, and build information.
 - Renders Hermes' canonical Kanban lanes, boards, profiles, cards, Markdown task content, task details, comments, events, runs, and bounded worker logs.
 - Creates tasks from each eligible lane with Hermes' native routing, priority, skills, workspace, parent, and goal-mode fields.
 - Exposes workflow-safe task transitions, parent and child links, child results, attachments, home-channel notifications, and human comments.
@@ -47,9 +52,11 @@ Hermes is isolated behind a separate Rust-owned adapter:
 - task creation, state changes, and comments are explicit user actions;
 - no Git commit, push, pull request, or remote publication happens automatically.
 
+Local agent runs are launched by a narrow Rust runtime adapter. Codex uses App Server's structured stdio protocol; Claude Code uses its noninteractive streaming JSON interface. Both inherit their CLI's existing sign-in, are fixed to the selected repository, use the execution profile's read-only or workspace-write policy, and never commit or publish automatically. Credentials and raw provider protocol events are not exposed to React.
+
 ## Theming
 
-Every color, font, and size comes from the design tokens in `src/theme.css`; component styles in `src/App.css` reference tokens only. The default scheme follows macOS dark-mode conventions: neutral gray surfaces, the system blue accent, Apple's semantic colors, and Xcode-style syntax highlighting. The window uses a macOS overlay title bar, with the app header acting as the draggable titlebar.
+Colors and typography come from the design tokens in `src/theme.css`. Settings → Appearance offers System, Light, and Dark. System follows the Mac's appearance changes; an explicit choice persists in this app's local storage. Syntax and diff colors follow the selected appearance. The window keeps its native macOS controls, with a persistent draggable toolbar above the scrolling content.
 
 To add a color scheme, add a `:root[data-theme="name"]` override block in `theme.css` and set `document.documentElement.dataset.theme`. Diff colors and syntax highlighting (`src/prismTheme.ts` reads the `--syntax-*` tokens) follow automatically. A `purple` scheme ships as a working example.
 
@@ -65,10 +72,35 @@ To add a color scheme, add a `:root[data-theme="name"]` override block in `theme
 
 ```bash
 npm install
-npm run tauri dev
+npm run local
 ```
 
+`npm run local` runs **Patchdeck Local** with Vite live updates and Tauri's Rust rebuild watcher. It uses `com.local.patchdeck.dev`, a separate app data directory, and its own Cargo target directory at `src-tauri/target/local`. The production application can keep running alongside it. Local builds never check for or install production updates.
+
+Install a Finder launcher once:
+
+```bash
+npm run local:install
+open "/Applications/Patchdeck Local.app"
+```
+
+The launcher starts the same live development session without a Terminal window. Opening it again brings an existing Local window forward. It points to this checkout, so reinstall the launcher if the checkout or Node executable moves. Existing launchers are backed up before replacement. Startup and rebuild output goes to `~/Library/Logs/Patchdeck Local/development.log`. The first launch compiles the Rust dependencies and takes longer than later launches.
+
+The native development process runs from `src-tauri/target/local/Patchdeck Local.app`, with its own Dock name and bundle identity. Use the launcher in `/Applications` to start it so the development server also starts. Quit Patchdeck Local to stop that session; closing its window keeps it available in the Dock. For a terminal session, Ctrl+C stops the development process and server. A duplicate session is refused. After a crash, if startup reports a stale `src-tauri/target/local/session.json` lock, check that no Local development session is running before removing that generated file and retrying.
+
+Local and production keep separate app state, but opening the same repository points both apps at the same working tree. File saves and explicitly started agent work still affect that repository.
+
 Run `npm run dev` for frontend-only interface work. The repository picker and Git operations require the Tauri desktop process and are unavailable in a normal browser tab.
+
+Build a standalone development snapshot with:
+
+```bash
+npm run tauri:build:dev
+```
+
+This produces **Patchdeck Local.app** in the build output. It embeds a frontend snapshot and does not live reload. It shares the live app's development identity, so run only one Local instance at a time. Keep the Finder launcher in `/Applications` for live testing.
+
+See [the desktop workflow record](docs/flows/local-app-and-desktop-ui.md) for implementation boundaries and verification.
 
 ## Verification
 
@@ -78,7 +110,7 @@ npm run build
 cd src-tauri && cargo test
 ```
 
-Build a macOS application bundle with `npm run tauri build`.
+Build the production-named macOS application bundle with `npm run tauri build`.
 
 ## Releases and updates
 
@@ -110,11 +142,15 @@ src/
   types.ts           Shared frontend data contracts
   editor/            Guarded working-tree editor
   hermes/            Hermes connection, board, task drawer, and tests
+  localBoard/        Local cards/runs plus local, repository, and federated board projections
+  providers/         Agent-runtime contracts and reusable execution profiles
+  settings/          Provider, orchestrator, profile, safety, and build settings
   review/            Local task links and inline review anchors
 src-tauri/src/
   editor.rs          Contained, hash-checked, atomic file writes
   lib.rs             Narrow Tauri command registration
   hermes.rs          Loopback-only managed/attached Hermes adapter
+  agent_runtime.rs   Codex and Claude Code lifecycle, protocol normalization, and cleanup
   repository.rs      Read-only Git operations and diff parsing
   workspace.rs       Immediate-child repository discovery
 PRD.md               Product requirements and acceptance criteria
@@ -142,3 +178,4 @@ docs/hermes-agent-integration-research.md  Source-backed upstream research
 - Hermes activity streams over the upstream board event WebSocket (Rust-owned, loopback, token never exposed to the frontend); polling remains as an automatic fallback and safety net when the socket is unavailable
 - No staging, commits, fetching, pushing, GitHub authentication, or pull requests
 - Hermes connections are loopback-only and attached session tokens are not persisted
+- Provider sign-in is owned by each CLI. If Codex or Claude Code is logged out, Settings gives the supported Terminal command; embedded browser/device authorization is not implemented yet.

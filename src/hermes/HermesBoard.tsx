@@ -37,8 +37,8 @@ import type { ReviewTarget } from "../review/inlineComments";
 import { RefreshIcon } from "../components/icons";
 import { errorMessage } from "../errors";
 
-const LEGACY_BOARD_KEY = "branch-diff-viewer.hermes.selected-board";
-const BOARD_SELECTIONS_KEY = "branch-diff-viewer.hermes.selected-boards";
+const LEGACY_BOARD_KEY = "patchdeck.hermes.selected-board";
+const BOARD_SELECTIONS_KEY = "patchdeck.hermes.selected-boards";
 const NO_REPOSITORY_SCOPE = "__no_repository__";
 const CANONICAL_COLUMNS = ["triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done"];
 // The UI uses the actionable subset of Rust's create allowlist. Terminal lanes
@@ -97,22 +97,25 @@ function persistBoardSelection(repositoryPath: string | undefined, board: string
   localStorage.removeItem(LEGACY_BOARD_KEY);
 }
 
-export function HermesBoard({ session, repositoryPath, onReviewTask }: {
+export function HermesBoard({ session, repositoryPath, onReviewTask, boardSlug, initialTaskId, onCreateTask }: {
   session: HermesSessionController;
   repositoryPath?: string;
   onReviewTask: (target: ReviewTarget) => void;
+  boardSlug?: string;
+  initialTaskId?: string | null;
+  onCreateTask?: (board: string, targetStatus: string) => void;
 }) {
   const connected = session.status.state === "connected" || session.status.state === "degraded";
   const refreshConnection = session.refresh;
   const [boards, setBoards] = useState<HermesBoardMeta[]>([]);
   const [profiles, setProfiles] = useState<HermesProfile[]>([]);
-  const [selectedBoard, setSelectedBoard] = useState(() => readBoardSelection(repositoryPath));
+  const [selectedBoard, setSelectedBoard] = useState(() => boardSlug ?? readBoardSelection(repositoryPath));
   const [board, setBoard] = useState<HermesBoardData | null>(null);
   const [includeArchived, setIncludeArchived] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(initialTaskId ?? null);
   const [createColumn, setCreateColumn] = useState<string | null>(null);
   const [eventsLive, setEventsLive] = useState(false);
   const [taskEventNonce, setTaskEventNonce] = useState(0);
@@ -133,6 +136,7 @@ export function HermesBoard({ session, repositoryPath, onReviewTask }: {
       setBoards(boardResponse.boards);
       setProfiles(profileResponse.profiles);
       setSelectedBoard((current) => {
+        if (boardSlug && boardResponse.boards.some((candidate) => candidate.slug === boardSlug)) return boardSlug;
         const available = boardResponse.boards.some((candidate) => candidate.slug === current);
         const next = available ? current : boardResponse.current || boardResponse.boards[0]?.slug || "";
         if (next) persistBoardSelection(repositoryPath, next);
@@ -141,7 +145,19 @@ export function HermesBoard({ session, repositoryPath, onReviewTask }: {
     } catch (reason) {
       if (request === metadataRequest.current && scope === repositoryScopeRef.current) setError(errorMessage(reason));
     }
-  }, [connected, repositoryPath]);
+  }, [boardSlug, connected, repositoryPath]);
+
+  useEffect(() => {
+    if (!boardSlug || boardSlug === selectedBoard) return;
+    boardRequest.current += 1;
+    setBoard(null);
+    setSelectedBoard(boardSlug);
+    setSelectedTaskId(initialTaskId ?? null);
+  }, [boardSlug, initialTaskId, selectedBoard]);
+
+  useEffect(() => {
+    if (initialTaskId) setSelectedTaskId(initialTaskId);
+  }, [initialTaskId]);
 
   const loadBoard = useCallback(async (quiet = false) => {
     if (!connected || !selectedBoard) return;
@@ -184,9 +200,9 @@ export function HermesBoard({ session, repositoryPath, onReviewTask }: {
     boardRequest.current += 1;
     setBoard(null);
     setSelectedTaskId(null);
-    setSelectedBoard(readBoardSelection(repositoryPath));
+    setSelectedBoard(boardSlug ?? readBoardSelection(repositoryPath));
     if (connected) void loadMetadata();
-  }, [connected, loadMetadata, repositoryPath]);
+  }, [boardSlug, connected, loadMetadata, repositoryPath]);
 
   useEffect(() => {
     void loadBoard();
@@ -255,7 +271,7 @@ export function HermesBoard({ session, repositoryPath, onReviewTask }: {
         <div className="agent-empty-mark"><AgentIcon /></div>
         <p className="eyebrow">HERMES AGENT</p>
         <h1>Bring the work and the code together.</h1>
-        <p>Use <strong>Connect Hermes</strong> in the top-right to open the native task board, worker activity, runs, logs, and human feedback loop.</p>
+        <p>Connect Hermes from <strong>Settings → Providers</strong> to open the native task board, worker activity, runs, logs, and human feedback loop.</p>
       </main>
     );
   }
@@ -267,11 +283,13 @@ export function HermesBoard({ session, repositoryPath, onReviewTask }: {
           <span className="agent-kicker">Agent board</span>
           <strong>{boards.find((candidate) => candidate.slug === selectedBoard)?.name || selectedBoard || "Hermes Kanban"}</strong>
         </div>
-        <label className="board-select-label">Board
-          <select value={selectedBoard} onChange={(event) => chooseBoard(event.target.value)}>
-            {boards.map((candidate) => <option key={candidate.slug} value={candidate.slug}>{candidate.name || candidate.slug} · {candidate.total ?? 0}</option>)}
-          </select>
-        </label>
+        {!boardSlug && (
+          <label className="board-select-label">Board
+            <select value={selectedBoard} onChange={(event) => chooseBoard(event.target.value)}>
+              {boards.map((candidate) => <option key={candidate.slug} value={candidate.slug}>{candidate.name || candidate.slug} · {candidate.total ?? 0}</option>)}
+            </select>
+          </label>
+        )}
         <label className="archive-toggle">
           <input type="checkbox" checked={includeArchived} onChange={(event) => setIncludeArchived(event.target.checked)} />
           Archived
@@ -294,7 +312,7 @@ export function HermesBoard({ session, repositoryPath, onReviewTask }: {
                   <strong>{COLUMN_LABELS[column.name] ?? column.name}</strong>
                   <span className="lane-count">{column.tasks.length}</span>
                   {CREATABLE_COLUMNS.has(column.name) && (
-                    <button className="lane-create-button" aria-label={`New task in ${COLUMN_LABELS[column.name] ?? column.name}`} onClick={() => setCreateColumn(column.name)}>+</button>
+                    <button className="lane-create-button" aria-label={`New task in ${COLUMN_LABELS[column.name] ?? column.name}`} onClick={() => onCreateTask ? onCreateTask(selectedBoard, column.name) : setCreateColumn(column.name)}>+</button>
                   )}
                 </header>
                 <div className="kanban-card-list">
@@ -307,7 +325,7 @@ export function HermesBoard({ session, repositoryPath, onReviewTask }: {
         </div>
       )}
 
-      {createColumn && (
+      {createColumn && !onCreateTask && (
         <CreateTaskDialog
           board={selectedBoard}
           targetColumn={createColumn}

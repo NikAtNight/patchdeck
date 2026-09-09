@@ -1105,7 +1105,7 @@ mod tests {
                 .as_nanos();
             let fixture_id = NEXT_FIXTURE_ID.fetch_add(1, Ordering::Relaxed);
             let path = std::env::temp_dir().join(format!(
-                "branch-diff-viewer-{}-{suffix}-{fixture_id}",
+                "patchdeck-{}-{suffix}-{fixture_id}",
                 std::process::id()
             ));
             fs::create_dir_all(&path).unwrap();
