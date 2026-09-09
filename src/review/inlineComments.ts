@@ -7,6 +7,8 @@ import {
 import type { FileDiff } from "../types";
 
 export interface ReviewTarget {
+  source?: "hermes" | "local";
+  baseBranch?: string;
   board: string;
   taskId: string;
   title: string;
@@ -15,6 +17,8 @@ export interface ReviewTarget {
 }
 
 export interface InlineReviewComment {
+  source?: "hermes" | "local";
+  fileFingerprint?: string;
   id: string;
   repositoryPath: string;
   board: string;

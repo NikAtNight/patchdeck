@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import "@testing-library/jest-dom/vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
-import { createLocalCard, resetLocalBoardStore } from "./localBoard/store";
+import { createLocalCard, patchLocalCard, resetLocalBoardStore } from "./localBoard/store";
 import { resetReviewStore } from "./review/reviewStore";
 import type { Comparison, FileDiff, RepositoryInfo } from "./types";
 
@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   openWorkspace: vi.fn(),
   openWorkspaceProject: vi.fn(),
   compareBranches: vi.fn(),
+  compareWorkingTree: vi.fn(),
   loadFileDiff: vi.fn(),
   loadWorkingTreeFileDiff: vi.fn(),
   listCommits: vi.fn(),
@@ -75,6 +76,7 @@ vi.mock("./api", () => ({
   openWorkspace: mocks.openWorkspace,
   openWorkspaceProject: mocks.openWorkspaceProject,
   compareBranches: mocks.compareBranches,
+  compareWorkingTree: mocks.compareWorkingTree,
   loadFileDiff: mocks.loadFileDiff,
   loadWorkingTreeFileDiff: mocks.loadWorkingTreeFileDiff,
   listCommits: mocks.listCommits,
@@ -107,6 +109,11 @@ vi.mock("./hermes/api", () => ({
   deleteHermesAttachment: hermesMocks.deleteHermesAttachment,
   subscribeHermesEvents: hermesMocks.subscribeHermesEvents,
   unsubscribeHermesEvents: hermesMocks.unsubscribeHermesEvents,
+}));
+vi.mock("./providers/workspaces", () => ({
+  listCardWorktrees: vi.fn(async () => []),
+  createCardWorktree: vi.fn(async ({ repositoryPath, baseBranch }) => ({ repositoryPath, worktreePath: `${repositoryPath}/task-worktree`, branch: "patchdeck/task", baseBranch })),
+  attachCardWorktree: vi.fn(),
 }));
 vi.mock("./editor/api", () => editorMocks);
 vi.mock("./providers/api", () => providerMocks);
@@ -178,6 +185,7 @@ describe("Patchdeck", () => {
     mocks.compareBranches.mockReset();
     mocks.loadFileDiff.mockReset();
     mocks.loadWorkingTreeFileDiff.mockReset();
+    mocks.compareWorkingTree.mockReset().mockResolvedValue({ ...comparison, mode: "workingTree", revision: "test" });
     mocks.listCommits.mockReset();
     mocks.listCommits.mockResolvedValue([]);
     editorMocks.loadEditableFile.mockReset();
@@ -300,7 +308,7 @@ describe("Patchdeck", () => {
 
     expect(await screen.findByText("Local board")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Agent board" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: "New work" })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /New work/ })).toHaveLength(1);
     expect(screen.queryByRole("button", { name: "Connect Hermes" })).not.toBeInTheDocument();
   });
 
@@ -370,10 +378,49 @@ describe("Patchdeck", () => {
     await waitFor(() => expect(mocks.openRepository).toHaveBeenCalledWith(otherRepository.path));
     expect(await screen.findByRole("tab", { name: "other" })).toHaveAttribute("aria-selected", "true");
     expect(await screen.findByRole("complementary", { name: "Run in the other repository card details" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Create workspace" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Run with Codex" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "Run with Codex" }));
     await waitFor(() => expect(providerMocks.startAgentRuntime).toHaveBeenCalledWith(expect.objectContaining({
-      repositoryPath: otherRepository.path,
+      repositoryPath: `${otherRepository.path}/task-worktree`,
     })));
+  });
+
+  it("filters comparison branches without changing the comparison until a result is selected", async () => {
+    localStorage.setItem("patchdeck.session", JSON.stringify({ version: 1, tabs: [{ name: repository.name, path: repository.path, openMode: "repository" }], activePath: repository.path }));
+    mocks.openRepository.mockResolvedValue({ ...repository, branches: [...repository.branches, { name: "feature/search-picker", commit: "ccc" }] });
+    mocks.compareBranches.mockResolvedValue(comparison);
+    mocks.loadFileDiff.mockResolvedValue(fileDiff);
+    render(<App />);
+    const picker = await screen.findByRole("combobox", { name: "Compare" });
+    await waitFor(() => expect(mocks.compareBranches).toHaveBeenCalled());
+    const calls = mocks.compareBranches.mock.calls.length;
+    fireEvent.focus(picker);
+    fireEvent.change(picker, { target: { value: "SEARCH-PICKER" } });
+    expect(mocks.compareBranches).toHaveBeenCalledTimes(calls);
+    fireEvent.click(screen.getByRole("option", { name: "feature/search-picker" }));
+    await waitFor(() => expect(mocks.compareBranches).toHaveBeenLastCalledWith(repository.path, "main", "feature/search-picker"));
+  });
+
+  it("consumes return-to-card navigation instead of reopening the old drawer", async () => {
+    localStorage.setItem("patchdeck.session", JSON.stringify({ version: 1, tabs: [{ name: repository.name, path: repository.path, openMode: "repository" }], activePath: repository.path }));
+    localStorage.setItem("patchdeck.active-surface", "agent");
+    const card = createLocalCard({ repositoryPath: repository.path, title: "Review this card" });
+    patchLocalCard(card.id, { workspace: { repositoryPath: repository.path, worktreePath: repository.path, branch: "feature", baseBranch: "main" } });
+    createLocalCard({ repositoryPath: repository.path, title: "Another card" });
+    mocks.openRepository.mockResolvedValue(repository);
+    mocks.loadWorkingTreeFileDiff.mockResolvedValue(fileDiff);
+    render(<App />);
+    fireEvent.click(await screen.findByText("Review this card"));
+    fireEvent.click(screen.getByRole("button", { name: "Review changes" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Back to card" }));
+    expect(await screen.findByRole("complementary", { name: "Review this card card details" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Close card details" }));
+    fireEvent.click(screen.getByText("Another card"));
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    fireEvent.click(screen.getByRole("button", { name: "Agent board" }));
+    await screen.findByText("Local board");
+    expect(screen.queryByRole("complementary", { name: "Review this card card details" })).not.toBeInTheDocument();
   });
 
   it("shows a failed All Work repository open without leaving the Agent Board", async () => {

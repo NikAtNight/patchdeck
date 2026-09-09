@@ -42,6 +42,7 @@ function App() {
   const [workspaceAnnouncement, setWorkspaceAnnouncement] = useState("");
   const [activeSurface, setActiveSurface] = useState<AppSurface>(readAppSurface);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [localCardToOpen, setLocalCardToOpen] = useState<string | null>(null);
   const initialActivePath = initialSession.tabs.find((tab) => tab.id === initialSession.activeTabId)?.path;
   const [reviewTarget, setReviewTarget] = useState<ReviewTarget | null>(() =>
     initialActivePath ? readReviewTarget(initialActivePath) : null
@@ -389,6 +390,8 @@ function App() {
             hermes={hermes}
             repositoryPath={activeRepositoryPath ?? undefined}
             onReviewTask={selectReviewTarget}
+            initialLocalCardId={localCardToOpen ?? undefined}
+            onInitialCardOpened={() => setLocalCardToOpen(null)}
             onOpenRepository={activateRepository}
           />
         </Suspense>
@@ -405,6 +408,11 @@ function App() {
                 reviewTarget={reviewTarget}
                 onReviewTargetUpdated={updateReviewTarget}
                 agentAttached={agentAttached}
+                onReturnToCard={(cardId, repositoryPath) => {
+                  setLocalCardToOpen(cardId);
+                  activateRepository(repositoryPath);
+                  setActiveSurface("agent");
+                }}
               />
             ) : (
               <ProjectLoadingPane

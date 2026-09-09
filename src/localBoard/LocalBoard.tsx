@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { CloseIcon, PlusIcon, RefreshIcon } from "../components/icons";
 import { errorMessage } from "../errors";
+import { compareWorkingTree, openRepository } from "../api";
 import { listAgentRuntimes } from "../providers/api";
 import {
   executionProfileForRepository,
@@ -11,6 +12,10 @@ import {
 } from "../providers/profiles";
 import type { ExecutionProfile } from "../providers/profiles";
 import type { AgentRuntimeId, AgentRuntimeStatus } from "../providers/types";
+import { attachCardWorktree, createCardWorktree, listCardWorktrees } from "../providers/workspaces";
+import type { CardWorktree, CardWorkspace } from "../providers/workspaces";
+import type { ReviewTarget } from "../review/inlineComments";
+import type { Branch } from "../types";
 import { continueLocalRun, launchLocalCard, runtimeLabel, stopLocalRun } from "./runtime";
 import {
   createLocalCard,
@@ -35,6 +40,7 @@ export interface LocalBoardProps {
   onCreateWork?: (lane: LocalLane) => void;
   onSendToHermes?: (card: LocalCard) => void;
   onOpenHermesBoard?: (board: string, taskId?: string) => void;
+  onReviewTask?: (target: ReviewTarget) => void;
 }
 
 export function LocalBoard({
@@ -43,6 +49,7 @@ export function LocalBoard({
   onCreateWork,
   onSendToHermes,
   onOpenHermesBoard,
+  onReviewTask,
 }: LocalBoardProps) {
   const board = useLocalBoardDocument();
   const profileDocument = useExecutionProfiles();
@@ -52,6 +59,7 @@ export function LocalBoard({
   const [providerError, setProviderError] = useState<string | null>(null);
   const [checkingProviders, setCheckingProviders] = useState(true);
   const previousRepositoryPath = useRef(repositoryPath);
+  const launchingCards = useRef(new Set<string>());
   const cards = useMemo(
     () => board.cards.filter((card) => card.repositoryPath === repositoryPath),
     [board.cards, repositoryPath],
@@ -104,8 +112,19 @@ export function LocalBoard({
     const profile = requestedProfile
       ?? profileDocument.profiles.find((candidate) => candidate.id === card.executionProfileId)
       ?? executionProfileForRepository(card.repositoryPath);
-    if (!profile || !runtimeReady(runtimes, profile.runtimeId)) return;
-    await launchLocalCard(card, profile);
+    if (!profile || !runtimeReady(runtimes, profile.runtimeId) || launchingCards.current.has(card.id)) return;
+    if (!card.workspace) {
+      setProviderError("Create or attach the workspace before starting this card.");
+      return;
+    }
+    launchingCards.current.add(card.id);
+    try {
+      await launchLocalCard(card, profile);
+    } catch (reason) {
+      setProviderError(errorMessage(reason));
+    } finally {
+      launchingCards.current.delete(card.id);
+    }
   }
 
   const readyCount = runtimes.filter((runtime) => runtime.ready).length;
@@ -122,7 +141,7 @@ export function LocalBoard({
           {checkingProviders ? "Checking agents…" : `${readyCount} agent${readyCount === 1 ? "" : "s"} ready`}
         </span>
         <button className="icon-button" aria-label="Check agent providers" title="Check agent providers" onClick={() => void refreshProviders()} disabled={checkingProviders}><RefreshIcon /></button>
-        <button className="primary-button board-create-button" onClick={() => requestCreate("todo")}><PlusIcon /> New work</button>
+        {!onCreateWork && <button className="primary-button board-create-button" onClick={() => requestCreate("todo")}><PlusIcon /> New work</button>}
       </header>
 
       {!checkingProviders && providerError && <div className="board-error" role="alert">{providerError}</div>}
@@ -173,12 +192,23 @@ export function LocalBoard({
           onCreated={(card, profile) => {
             setCreateLane(null);
             setSelectedCardId(card.id);
-            if (profile) void launchCard(card, profile);
+            if (profile) void (async () => {
+              try {
+                const info = await openRepository(card.repositoryPath);
+                const baseBranch = info.suggestedBaseBranch ?? "main";
+                const workspace = await createCardWorktree({ repositoryPath: card.repositoryPath, cardId: card.id, baseBranch });
+                patchLocalCard(card.id, { workspace });
+                await launchCard({ ...card, workspace }, profile);
+              } catch (reason) {
+                setProviderError(errorMessage(reason));
+              }
+            })();
           }}
         />
       )}
       {selectedCard && (
         <LocalCardDrawer
+          key={selectedCard.id}
           card={selectedCard}
           run={latestRunForCard(selectedCard.id)}
           profiles={profileDocument.profiles}
@@ -187,6 +217,7 @@ export function LocalBoard({
           onLaunch={(profile) => void launchCard(selectedCard, profile)}
           onSendToHermes={onSendToHermes ? () => onSendToHermes(selectedCard) : undefined}
           onOpenHermesBoard={onOpenHermesBoard}
+          onReviewTask={onReviewTask}
         />
       )}
     </main>
@@ -214,6 +245,7 @@ function LocalCardView({ card, run, profile, onOpen }: {
         <span className="task-assignee">{profile?.name ?? (run ? runtimeLabel(run.runtimeId) : "No agent")}</span>
         {run && <RunStatus run={run} />}
       </span>
+      <span className="task-card-footer">Last activity {formatActivity(run?.updatedAt ?? card.updatedAt)}</span>
     </button>
   );
 }
@@ -266,7 +298,7 @@ function LocalCreateDialog({ lane, repositoryPath, profiles, runtimes, onClose, 
   );
 }
 
-function LocalCardDrawer({ card, run, profiles, runtimes, onClose, onLaunch, onSendToHermes, onOpenHermesBoard }: {
+function LocalCardDrawer({ card, run, profiles, runtimes, onClose, onLaunch, onSendToHermes, onOpenHermesBoard, onReviewTask }: {
   card: LocalCard;
   run: LocalRun | null;
   profiles: ExecutionProfile[];
@@ -275,19 +307,42 @@ function LocalCardDrawer({ card, run, profiles, runtimes, onClose, onLaunch, onS
   onLaunch: (profile: ExecutionProfile) => void;
   onSendToHermes?: () => void;
   onOpenHermesBoard?: (board: string, taskId?: string) => void;
+  onReviewTask?: (target: ReviewTarget) => void;
 }) {
   const [reply, setReply] = useState("");
   const [profileId, setProfileId] = useState(card.executionProfileId ?? executionProfileForRepository(card.repositoryPath)?.id ?? "");
   const busy = run?.status === "starting" || run?.status === "running";
   const selectedProfile = profiles.find((profile) => profile.id === profileId) ?? null;
   const label = run ? runtimeLabel(run.runtimeId) : selectedProfile?.name ?? "Agent";
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  const [changedCount, setChangedCount] = useState<number | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    if (!card.workspace) {
+      setChangedCount(null);
+      return;
+    }
+    let inFlight = false;
+    const refresh = () => {
+      if (inFlight || document.visibilityState === "hidden") return;
+      inFlight = true;
+      void compareWorkingTree(card.workspace!.worktreePath, card.workspace!.baseBranch)
+        .then((comparison) => active && setChangedCount(comparison.files.length))
+        .catch(() => active && setChangedCount(null))
+        .finally(() => { inFlight = false; });
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 5_000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [card.updatedAt, card.workspace]);
 
   async function sendReply(event: FormEvent) {
     event.preventDefault();
     const message = reply.trim();
     if (!run?.sessionId || !message || busy) return;
     setReply("");
-    await continueLocalRun(run, card.repositoryPath, message);
+    await continueLocalRun(run, run.repositoryPath ?? card.workspace?.worktreePath ?? card.repositoryPath, message);
   }
 
   return (
@@ -323,13 +378,16 @@ function LocalCardDrawer({ card, run, profiles, runtimes, onClose, onLaunch, onS
           )}
           <section className="drawer-section local-run-section">
             <h3>Agent conversation {run && <RunStatus run={run} />}</h3>
+            {run && !run.repositoryPath && <div className="drawer-error">This older conversation has no recorded workspace. Start a new card in an isolated workspace to continue safely.</div>}
             {!run ? (
               <div className="local-provider-empty">
-                <p>Choose an execution profile. The run stays attached to this local card and repository.</p>
+                <p>Choose an execution profile and an isolated workspace. New work starts from the base branch. Uncommitted changes in the original checkout are not copied.</p>
+                <WorkspacePicker card={card} disabled={busy} onError={setWorkspaceError} />
+                {workspaceError && <div className="drawer-error" role="alert">{workspaceError}</div>}
                 <select aria-label="Execution profile" value={profileId} onChange={(event) => setProfileId(event.target.value)}>
                   {profiles.map((profile) => <option key={profile.id} value={profile.id} disabled={!runtimeReady(runtimes, profile.runtimeId)}>{profile.name}{runtimeReady(runtimes, profile.runtimeId) ? "" : " (unavailable)"}</option>)}
                 </select>
-                <button className="primary-button" onClick={() => selectedProfile && onLaunch(selectedProfile)} disabled={!selectedProfile || !runtimeReady(runtimes, selectedProfile.runtimeId)}>Run with {selectedProfile ? runtimeLabel(selectedProfile.runtimeId) : "agent"}</button>
+                <button className="primary-button" onClick={() => selectedProfile && onLaunch(selectedProfile)} disabled={!card.workspace || !selectedProfile || !runtimeReady(runtimes, selectedProfile.runtimeId)}>Run with {selectedProfile ? runtimeLabel(selectedProfile.runtimeId) : "agent"}</button>
               </div>
             ) : (
               <>
@@ -347,17 +405,36 @@ function LocalCardDrawer({ card, run, profiles, runtimes, onClose, onLaunch, onS
                 {run.error && <div className="drawer-error" role="alert">{run.error}</div>}
                 {busy ? (
                   <button className="secondary-button stop-run-button" onClick={() => void stopLocalRun(run)}>Stop run</button>
-                ) : run.sessionId ? (
+                ) : run.sessionId && run.repositoryPath ? (
                   <form className="local-run-composer" onSubmit={sendReply}>
                     <textarea value={reply} onChange={(event) => setReply(event.target.value)} rows={3} placeholder={`Continue this ${runtimeLabel(run.runtimeId)} conversation…`} aria-label={`Message ${runtimeLabel(run.runtimeId)}`} />
                     <button className="primary-button" disabled={!reply.trim()}>Send</button>
                   </form>
-                ) : (
+                ) : !run.repositoryPath ? null : (
                   <button className="secondary-button" onClick={() => selectedProfile && onLaunch(selectedProfile)} disabled={!selectedProfile || !runtimeReady(runtimes, selectedProfile.runtimeId)}>Retry with {label}</button>
                 )}
               </>
             )}
           </section>
+          {card.workspace && onReviewTask && (
+            <section className="drawer-section">
+              <h3>Changes</h3>
+              <p>{card.workspace.branch} from {card.workspace.baseBranch}</p>
+              {changedCount !== null && <p>{changedCount} changed file{changedCount === 1 ? "" : "s"}</p>}
+              <button className="primary-button" onClick={() => {
+                const target = {
+                  source: "local",
+                  board: "local",
+                  taskId: card.id,
+                  title: card.title,
+                  status: card.lane,
+                  repositoryPath: card.workspace!.worktreePath,
+                  baseBranch: card.workspace!.baseBranch,
+                } as ReviewTarget;
+                onReviewTask(target);
+              }}>Review changes</button>
+            </section>
+          )}
           {onSendToHermes && (
             <section className="drawer-section send-to-hermes-section">
               <h3>Orchestrator</h3>
@@ -372,8 +449,72 @@ function LocalCardDrawer({ card, run, profiles, runtimes, onClose, onLaunch, onS
 }
 
 function RunStatus({ run }: { run: LocalRun }) {
-  const label = run.status === "idle" ? "ready" : run.status;
+  const label = run.status === "idle" ? "Awaiting review" : run.status;
   return <span className={`local-run-status run-${run.status}`}>{(run.status === "starting" || run.status === "running") && <span className="live-pulse" />}{label}</span>;
+}
+
+function WorkspacePicker({ card, disabled, onError }: { card: LocalCard; disabled: boolean; onError: (message: string | null) => void }) {
+  const [mode, setMode] = useState<"new" | "branch" | "attach">("new");
+  const [baseBranch, setBaseBranch] = useState("main");
+  const [worktrees, setWorktrees] = useState<CardWorktree[]>([]);
+  const [branches, setBranches] = useState<Branch[]>([]);
+  const [selection, setSelection] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (mode === "branch") setSelection(branches[0]?.name ?? "");
+    if (mode === "attach") setSelection(worktrees[0]?.path ?? "");
+  }, [branches, mode, worktrees]);
+
+  useEffect(() => {
+    let active = true;
+    void openRepository(card.repositoryPath).then((info) => {
+      if (active) {
+        setBaseBranch(info.suggestedBaseBranch ?? "main");
+        setBranches(info.branches);
+      }
+    }).catch((reason) => active && onError(errorMessage(reason)));
+    void listCardWorktrees(card.repositoryPath).then((items) => {
+      if (active) {
+        setWorktrees(items);
+        setSelection(items[0]?.path ?? "");
+      }
+    }).catch((reason) => active && onError(errorMessage(reason)));
+    return () => { active = false; };
+  }, [card.repositoryPath]);
+
+  async function bind() {
+    setBusy(true);
+    onError(null);
+    try {
+      let workspace: CardWorkspace;
+      if (mode === "attach") {
+        workspace = await attachCardWorktree({ repositoryPath: card.repositoryPath, worktreePath: selection, baseBranch });
+      } else {
+        const existingBranch = mode === "branch" ? selection : null;
+        workspace = await createCardWorktree({ repositoryPath: card.repositoryPath, cardId: card.id, baseBranch, existingBranch });
+      }
+      patchLocalCard(card.id, { workspace });
+    } catch (reason) {
+      onError(errorMessage(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (card.workspace) return <p className="workspace-binding">Workspace: {card.workspace.worktreePath}<br />Branch: {card.workspace.branch} from {card.workspace.baseBranch}</p>;
+  return <div className="workspace-picker">
+    <label>Workspace policy<select aria-label="Workspace policy" value={mode} onChange={(event) => setMode(event.target.value as typeof mode)} disabled={disabled || busy}>
+      <option value="new">New isolated workspace</option>
+      <option value="branch">Existing local branch in a new worktree</option>
+      <option value="attach">Attach an existing worktree</option>
+    </select></label>
+    <label>Base branch<input aria-label="Base branch" value={baseBranch} onChange={(event) => setBaseBranch(event.target.value)} disabled={disabled || busy} /></label>
+    {mode !== "new" && <label>{mode === "attach" ? "Worktree" : "Branch"}<select aria-label={mode === "attach" ? "Worktree" : "Existing branch"} value={selection} onChange={(event) => setSelection(event.target.value)} disabled={disabled || busy}>
+      {(mode === "attach" ? worktrees.map((item) => ({ value: item.path, label: `${item.path}${item.branch ? ` · ${item.branch}` : ""}` })) : branches.map((branch) => ({ value: branch.name, label: branch.name }))).map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+    </select></label>}
+    <button type="button" className="secondary-button" onClick={() => void bind()} disabled={disabled || busy || !baseBranch.trim() || (mode !== "new" && !selection)}>{busy ? "Preparing…" : mode === "attach" ? "Attach workspace" : "Create workspace"}</button>
+  </div>;
 }
 
 function runtimeReady(runtimes: AgentRuntimeStatus[], runtimeId: AgentRuntimeId) {
@@ -387,4 +528,8 @@ function repositoryName(path: string) {
 function shortId(id: string) {
   const parts = id.split("-");
   return parts[parts.length - 1]?.slice(0, 8) ?? id.slice(0, 8);
+}
+
+function formatActivity(timestamp: number) {
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(timestamp);
 }

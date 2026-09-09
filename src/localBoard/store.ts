@@ -92,13 +92,26 @@ export function createLocalCard(input: {
   return card;
 }
 
-export function patchLocalCard(cardId: string, patch: Partial<Pick<LocalCard, "title" | "body" | "lane" | "executionProfileId">>) {
+export function patchLocalCard(cardId: string, patch: Partial<Pick<LocalCard, "title" | "body" | "lane" | "executionProfileId" | "workspace">>) {
   updateDocument({
     ...document,
-    cards: document.cards.map((card) => card.id === cardId
-      ? { ...card, ...patch, title: patch.title?.trim() || card.title, updatedAt: Date.now() }
-      : card),
+    cards: document.cards.map((card) => {
+      if (card.id !== cardId) return card;
+      const hasRunIdentity = document.runs.some((run) => run.cardId === cardId
+        && (run.sessionId || run.status === "starting" || run.status === "running"));
+      const safePatch = patch.workspace && hasRunIdentity && !sameWorkspace(card.workspace, patch.workspace)
+        ? { ...patch, workspace: card.workspace }
+        : patch;
+      return { ...card, ...safePatch, title: safePatch.title?.trim() || card.title, updatedAt: Date.now() };
+    }),
   });
+}
+
+function sameWorkspace(left: LocalCard["workspace"], right: LocalCard["workspace"]) {
+  return left?.repositoryPath === right?.repositoryPath
+    && left?.worktreePath === right?.worktreePath
+    && left?.branch === right?.branch
+    && left?.baseBranch === right?.baseBranch;
 }
 
 export function addLocalCardHandoff(cardId: string, handoff: Omit<LocalCardHandoff, "createdAt">) {
@@ -122,7 +135,7 @@ export function deleteLocalCard(cardId: string) {
   });
 }
 
-export function createLocalRun(cardId: string, prompt: string, profile: ExecutionProfile) {
+export function createLocalRun(cardId: string, prompt: string, profile: ExecutionProfile, repositoryPath: string | null = null, baseBranch: string | null = null) {
   const now = Date.now();
   const run: LocalRun = {
     id: newId("run"),
@@ -133,6 +146,8 @@ export function createLocalRun(cardId: string, prompt: string, profile: Executio
     model: profile.model,
     sandbox: profile.sandbox,
     instructions: profile.instructions,
+    repositoryPath,
+    baseBranch,
     status: "starting",
     messages: [{ id: newId("message"), role: "user", body: prompt, createdAt: now }],
     error: null,
@@ -284,6 +299,7 @@ function sanitizeCard(value: unknown): LocalCard | null {
     executionProfileId: typeof value.executionProfileId === "string"
       ? value.executionProfileId
       : value.provider === "codex" ? "codex-workspace" : null,
+    workspace: sanitizeWorkspace(value.workspace, value.repositoryPath),
     hermesHandoffs: Array.isArray(value.hermesHandoffs)
       ? value.hermesHandoffs.map(sanitizeHandoff).filter(isPresent)
       : [],
@@ -312,11 +328,28 @@ function sanitizeRun(value: unknown): LocalRun | null {
     model: typeof value.model === "string" ? value.model : "",
     sandbox: sanitizeSandbox(value.sandbox),
     instructions: typeof value.instructions === "string" ? value.instructions : "",
+    repositoryPath: typeof value.repositoryPath === "string" ? value.repositoryPath : null,
+    baseBranch: typeof value.baseBranch === "string" ? value.baseBranch : null,
     status: value.status,
     messages: Array.isArray(value.messages) ? value.messages.map(sanitizeMessage).filter(isPresent).slice(-MAX_MESSAGES_PER_RUN) : [],
     error: typeof value.error === "string" ? value.error : null,
     createdAt: numberOrNow(value.createdAt),
     updatedAt: numberOrNow(value.updatedAt),
+  };
+}
+
+function sanitizeWorkspace(value: unknown, repositoryPath: unknown): LocalCard["workspace"] {
+  if (!isRecord(value)
+    || typeof repositoryPath !== "string"
+    || value.repositoryPath !== repositoryPath
+    || typeof value.worktreePath !== "string"
+    || typeof value.branch !== "string"
+    || typeof value.baseBranch !== "string") return undefined;
+  return {
+    repositoryPath,
+    worktreePath: value.worktreePath,
+    branch: value.branch,
+    baseBranch: value.baseBranch,
   };
 }
 

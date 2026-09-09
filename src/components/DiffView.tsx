@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import { Highlight } from "prism-react-renderer";
 import { syntaxTheme } from "../prismTheme";
@@ -32,6 +32,8 @@ export function DiffView({
   onUpdateComment,
   onSendFeedback,
   feedbackStatus,
+  feedbackSending = false,
+  onCommentEditingChange,
   onClearReviewTarget,
   viewed,
   onToggleViewed,
@@ -52,12 +54,18 @@ export function DiffView({
   onUpdateComment: (commentId: string, state: InlineReviewComment["state"]) => void;
   onSendFeedback: () => Promise<void>;
   feedbackStatus: string | null;
+  feedbackSending?: boolean;
+  onCommentEditingChange?: (editing: boolean) => void;
   onClearReviewTarget: () => void;
   viewed: boolean;
   onToggleViewed: () => void;
 }) {
   const [commentAnchor, setCommentAnchor] = useState<DiffCommentAnchor | null>(null);
   const [commentBody, setCommentBody] = useState("");
+  useEffect(() => {
+    onCommentEditingChange?.(commentAnchor !== null);
+    return () => onCommentEditingChange?.(false);
+  }, [commentAnchor, onCommentEditingChange]);
   const pendingComments = comments.filter((comment) => comment.state === "open" && comment.sentAt === null).length;
 
   function submitComment(event: FormEvent) {
@@ -79,14 +87,14 @@ export function DiffView({
           </div>
         </div>
         <div className="file-header-actions">
-          {reviewTarget && <button className="review-task-chip" title={`Reviewing ${reviewTarget.title}`} onClick={onClearReviewTarget}>{reviewTarget.taskId} ×</button>}
+          {reviewTarget && reviewTarget.source !== "local" && <button className="review-task-chip" title={`Reviewing ${reviewTarget.title}`} onClick={onClearReviewTarget}>{reviewTarget.taskId} ×</button>}
           <FileCounts file={file} />
           <label className={`viewed-toggle${viewed ? " active" : ""}`}>
             <input type="checkbox" checked={viewed} onChange={onToggleViewed} aria-label={`Mark ${file.path} as viewed`} />
             Viewed
           </label>
           {reviewTarget && pendingComments > 0 && (
-            <button className="send-feedback-button" onClick={() => void onSendFeedback()}>
+            <button className="send-feedback-button" disabled={feedbackSending} onClick={() => void onSendFeedback()}>
               {reviewTarget.status === "review" ? "Request changes" : "Send feedback"} · {pendingComments}
             </button>
           )}

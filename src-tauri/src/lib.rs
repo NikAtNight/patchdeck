@@ -1,4 +1,5 @@
 mod agent_runtime;
+mod card_workspaces;
 mod editor;
 mod hermes;
 mod legacy_storage;
@@ -389,6 +390,53 @@ fn compare_branches(
 }
 
 #[tauri::command]
+fn compare_working_tree(
+    repository_path: String,
+    base_branch: String,
+) -> Result<Comparison, String> {
+    repository::compare_working_tree(&repository_path, &base_branch)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_card_worktrees(
+    repository_path: String,
+) -> Result<Vec<card_workspaces::WorktreeInfo>, String> {
+    card_workspaces::list_worktrees(&repository_path)
+}
+
+#[tauri::command]
+fn create_card_worktree(
+    app: tauri::AppHandle,
+    repository_path: String,
+    card_id: String,
+    base_branch: String,
+    existing_branch: Option<String>,
+) -> Result<card_workspaces::CardWorkspace, String> {
+    let root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?
+        .join("worktrees");
+    card_workspaces::create_worktree(
+        &repository_path,
+        &root,
+        &card_id,
+        &base_branch,
+        existing_branch.as_deref(),
+    )
+}
+
+#[tauri::command]
+fn attach_card_worktree(
+    repository_path: String,
+    worktree_path: String,
+    base_branch: String,
+) -> Result<card_workspaces::CardWorkspace, String> {
+    card_workspaces::attach_worktree(&repository_path, &worktree_path, &base_branch)
+}
+
+#[tauri::command]
 fn load_file_diff(
     repository_path: String,
     merge_base: String,
@@ -523,6 +571,10 @@ pub fn run() {
             open_workspace,
             open_workspace_project,
             compare_branches,
+            compare_working_tree,
+            list_card_worktrees,
+            create_card_worktree,
+            attach_card_worktree,
             load_file_diff,
             load_working_tree_file_diff
         ])

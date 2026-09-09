@@ -8,6 +8,7 @@ export function FileTree({
   collapsedFolders,
   selectedPath,
   viewedPaths,
+  changedPaths,
   focusKey,
   onFocus,
   onSelect,
@@ -17,6 +18,7 @@ export function FileTree({
   collapsedFolders: Set<string>;
   selectedPath: string | null;
   viewedPaths: ReadonlySet<string>;
+  changedPaths?: ReadonlySet<string>;
   focusKey: string | null;
   onFocus: (key: string) => void;
   onSelect: (path: string) => void;
@@ -37,6 +39,7 @@ export function FileTree({
           collapsedFolders={collapsedFolders}
           selectedPath={selectedPath}
           viewedPaths={viewedPaths}
+          changedPaths={changedPaths}
           focusKey={focusKey}
           onFocus={onFocus}
           onSelect={onSelect}
@@ -113,6 +116,7 @@ function FileTreeItem({
   collapsedFolders,
   selectedPath,
   viewedPaths,
+  changedPaths,
   focusKey,
   onFocus,
   onSelect,
@@ -123,6 +127,7 @@ function FileTreeItem({
   collapsedFolders: Set<string>;
   selectedPath: string | null;
   viewedPaths: ReadonlySet<string>;
+  changedPaths?: ReadonlySet<string>;
   focusKey: string | null;
   onFocus: (key: string) => void;
   onSelect: (path: string) => void;
@@ -164,6 +169,7 @@ function FileTreeItem({
                 collapsedFolders={collapsedFolders}
                 selectedPath={selectedPath}
                 viewedPaths={viewedPaths}
+                changedPaths={changedPaths}
                 focusKey={focusKey}
                 onFocus={onFocus}
                 onSelect={onSelect}
@@ -189,7 +195,7 @@ function FileTreeItem({
       data-tree-key={nodeKey}
       tabIndex={focusKey === nodeKey ? 0 : -1}
       aria-selected={file.path === selectedPath}
-      aria-label={accessibleFileLabel(file)}
+      aria-label={`${accessibleFileLabel(file)}${changedPaths?.has(file.path) ? ", changed since your last review" : ""}`}
       onFocus={() => onFocus(nodeKey)}
       title={file.path}
     >
@@ -199,6 +205,7 @@ function FileTreeItem({
         <strong>{node.name}</strong>
       </span>
       <span className="file-meta">
+        {changedPaths?.has(file.path) && <span className="rereview-marker" title="Changed since your last review" aria-hidden="true">●</span>}
         <FileCounts file={file} compact />
         {viewedPaths.has(file.path) && <span className="viewed-mark" aria-hidden="true">✓</span>}
       </span>

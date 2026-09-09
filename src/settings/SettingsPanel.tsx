@@ -198,7 +198,7 @@ function AgentBoardHelp({ onNavigate }: { onNavigate: (section: "providers" | "p
     <div className="settings-page settings-copy-page">
       <header>
         <h3>Use the Agent Board without Hermes</h3>
-        <p>Patchdeck can manage cards and run Codex or Claude Code directly in your repository. Hermes is optional. You can also keep a board of tasks without connecting an agent.</p>
+        <p>Patchdeck can manage cards and run Codex or Claude Code in local Git worktrees. Hermes is optional. You can also keep a board of tasks without connecting an agent.</p>
         <div className="settings-help-actions">
           <button className="secondary-button" onClick={() => onNavigate("providers")}><ProviderIcon /> Open Providers</button>
           <button className="secondary-button" onClick={() => onNavigate("profiles")}><SlidersIcon /> Open Execution Profiles</button>
@@ -221,8 +221,8 @@ function AgentBoardHelp({ onNavigate }: { onNavigate: (section: "providers" | "p
         </li>
         <li>
           <h4>Run and follow up</h4>
-          <p>Open a local card to see its Agent conversation. For a card without a run, choose a profile and press Run with Codex or Run with Claude Code. Stop run cancels active work. When a conversation can be resumed, use Send to follow up; if no session was created, use Retry.</p>
-          <p>Drag cards between lanes or use the card&apos;s Lane menu. Starting a run moves it to In progress; move it to Review or Done yourself when ready.</p>
+          <p>Open a local card to see its Agent conversation. For a card without a run, create an isolated workspace or explicitly attach an existing worktree, then choose a profile and press Run with Codex or Run with Claude Code. Create & run prepares an isolated workspace from the repository's suggested base branch. Uncommitted changes in the original checkout are not copied. Stop run cancels active work. When a conversation can be resumed, use Send to follow up; if no session was created, use Retry.</p>
+          <p>Drag cards between lanes or use the card&apos;s Lane menu. Starting a run moves it to In progress. Successful turns move it to Review. Failed or stopped runs stay In progress; Done is your choice.</p>
         </li>
       </ol>
 
@@ -230,9 +230,15 @@ function AgentBoardHelp({ onNavigate }: { onNavigate: (section: "providers" | "p
         <h4>Why is an executor unavailable?</h4>
         <p>Check its provider card. CLI not found means the command-line app needs to be installed or made available to Patchdeck. If Authenticated is missing, complete the provider&apos;s sign-in and reconnect. Refresh after setup, then reopen New work to reload the available executors.</p>
       </section>
+      <section className="settings-help-section" aria-label="Review agent changes">
+        <h3>Review agent changes</h3>
+        <p>Open a card and choose Review changes. Working tree compares committed, staged, unstaged, and new files against the merge-base with the selected base branch. Live updates pause while you edit or draft a comment; use Live to pause them yourself.</p>
+        <p>Comment on a changed line and choose Request changes to send feedback to the card&apos;s existing agent conversation. Changed files must be reviewed again before feedback can be sent. Viewed stays set for unchanged files; a dot identifies files changed since your last review.</p>
+        <p>Two writable runs cannot share one worktree at the same time. Older conversations without a recorded workspace cannot resume; start a new card to bind the work safely. Worktrees remain on disk after a card is done or deleted.</p>
+      </section>
       <section className="settings-help-section" aria-label="Local Board and Hermes">
         <h4>Where does the work live?</h4>
-        <p>Local cards and conversation history are stored on this Mac. Agents run against the selected repository and use their provider&apos;s service and credentials. Local Board does not mean the agent runs offline.</p>
+        <p>Local cards and conversation history are stored on this Mac. Agents run in the card&apos;s recorded worktree and use their provider&apos;s service and credentials. Local Board does not mean the agent runs offline.</p>
         <h4>What changes when I connect Hermes?</h4>
         <p>Hermes manages its own boards, profiles, and workers. Connect it in Providers to use those boards. Send to Hermes creates a separate task on the chosen board; the local card and conversation stay in Patchdeck.</p>
       </section>

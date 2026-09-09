@@ -14,16 +14,27 @@ import {
 import type { LocalCard, LocalRun } from "./types";
 
 export async function launchLocalCard(card: LocalCard, profile: ExecutionProfile) {
+  if (!card.workspace) throw new Error("Choose or create a workspace before starting this card.");
   const prompt = card.body ? `${card.title}\n\n${card.body}` : card.title;
   patchLocalCard(card.id, { executionProfileId: profile.id, lane: "in_progress" });
-  const run = createLocalRun(card.id, prompt, profile);
-  await executeLocalTurn(run, card.repositoryPath, prompt);
+  const run = createLocalRun(card.id, prompt, profile, card.workspace.worktreePath, card.workspace.baseBranch);
+  await executeLocalTurn(run, run.repositoryPath!, prompt);
   return run;
 }
 
 export async function continueLocalRun(run: LocalRun, repositoryPath: string, prompt: string) {
+  if (!run.repositoryPath) {
+    patchLocalRun(run.id, {
+      status: "failed",
+      error: "This older conversation has no recorded workspace. Start a new card in an isolated workspace to continue safely.",
+    });
+    return;
+  }
+  const executionPath = run.repositoryPath ?? repositoryPath;
   addRunUserMessage(run.id, prompt);
-  await executeLocalTurn({ ...run, status: "starting" }, repositoryPath, prompt);
+  const card = getLocalBoardDocument().cards.find((candidate) => candidate.id === run.cardId);
+  if (card) patchLocalCard(card.id, { lane: "in_progress" });
+  await executeLocalTurn({ ...run, status: "starting" }, executionPath, prompt);
 }
 
 export async function stopLocalRun(run: LocalRun) {
@@ -68,10 +79,12 @@ export function applyAgentRuntimeEvent(event: AgentRuntimeEvent) {
     return;
   }
   if (event.type === "completed") {
+    const status = event.status === "cancelled" ? "cancelled" : event.status === "failed" ? "failed" : "idle";
     patchLocalRun(event.runId, {
-      status: event.status === "cancelled" ? "cancelled" : event.status === "failed" ? "failed" : "idle",
+      status,
       error: event.status === "failed" ? event.message ?? run.error : null,
     });
+    if (status === "idle") patchLocalCard(run.cardId, { lane: "review" });
     return;
   }
   if (event.type === "error") {

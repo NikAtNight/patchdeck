@@ -49,6 +49,7 @@ export async function initSessionStore() {
 }
 
 export interface ProjectView {
+  mode?: "branch" | "workingTree";
   baseBranch: string;
   compareBranch: string;
   selectedPath: string | null;
@@ -178,6 +179,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isProjectView(value: unknown): value is ProjectView {
   return isRecord(value)
+    && (value.mode === undefined || value.mode === "branch" || value.mode === "workingTree")
     && typeof value.baseBranch === "string"
     && typeof value.compareBranch === "string"
     && (typeof value.selectedPath === "string" || value.selectedPath === null);

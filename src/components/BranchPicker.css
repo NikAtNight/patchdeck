@@ -1,0 +1,11 @@
+.branch-picker { position: relative; flex: 1; min-width: 0; height: 100%; }
+.branch-picker input { width: 100%; height: 100%; min-width: 0; padding: 0 20px 0 0; border: 0; outline: 0; background: transparent; color: var(--text); font-size: var(--text-md); font-weight: 600; text-overflow: ellipsis; }
+.branch-picker input:focus-visible { outline: none; }
+.branch-picker input::placeholder { color: var(--muted); font-weight: 400; }
+.branch-picker-chevron { position: absolute; right: 0; top: 50%; transform: translateY(-60%); color: var(--muted); pointer-events: none; }
+.branch-picker-popover { position: absolute; z-index: 40; top: calc(100% + 7px); left: -10px; width: max(100%, 280px); max-width: calc(100vw - 40px); padding: 4px; border: 1px solid var(--border-strong); border-radius: 9px; background: var(--surface-3); box-shadow: var(--shadow-drawer); }
+.branch-picker-popover ul { max-height: 280px; overflow-y: auto; list-style: none; padding: 0; margin: 0; }
+.branch-picker-popover li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 9px; border-radius: 5px; color: var(--text); font-size: var(--text-sm); cursor: pointer; }
+.branch-picker-popover li > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.branch-picker-popover li.highlighted { background: var(--accent-soft); color: var(--accent-bright); }
+.branch-picker-popover p { margin: 0; padding: 10px; color: var(--muted); font-size: var(--text-sm); }

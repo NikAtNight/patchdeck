@@ -128,6 +128,8 @@ describe("local board store", () => {
       cards: [{ id: "card-1", executionProfileId: "codex-workspace", body: "Keep this", hermesHandoffs: [] }],
       runs: [{ id: "run-1", runtimeId: "codex", executionProfileId: "codex-workspace", sessionId: "thr_legacy", messages: [expect.objectContaining({ body: "Preserved" })] }],
     });
+    expect(parsed?.cards[0].workspace).toBeUndefined();
+    expect(parsed?.runs[0]).toMatchObject({ repositoryPath: null, baseBranch: null });
   });
 
   it("writes a migrated version back to native and mirror storage", async () => {

@@ -19,11 +19,10 @@ type RepositoryWorkItem =
   | { source: "local"; lane: LocalLane; sourceStatus: string; id: string; title: string; summary: string; card: LocalCard }
   | { source: "hermes"; lane: LocalLane; sourceStatus: string; id: string; title: string; summary: string; board: HermesBoardMeta; task: HermesTask };
 
-export function RepositoryBoard({ repositoryPath, boards, hermesConnected, onCreateWork, onOpenLocal, onOpenHermes }: {
+export function RepositoryBoard({ repositoryPath, boards, hermesConnected, onOpenLocal, onOpenHermes }: {
   repositoryPath?: string;
   boards: HermesBoardMeta[];
   hermesConnected: boolean;
-  onCreateWork: () => void;
   onOpenLocal: (cardId: string, repositoryPath: string) => void;
   onOpenHermes: (board: string, taskId: string) => void;
 }) {
@@ -76,7 +75,6 @@ export function RepositoryBoard({ repositoryPath, boards, hermesConnected, onCre
         <div className="agent-board-title"><span className="agent-kicker">Federated projection</span><strong>{repositoryPath ? "This Repository" : "All Work"}</strong></div>
         <span className="agent-worker-summary">{items.length} matching item{items.length === 1 ? "" : "s"}</span>
         {hermesConnected && <button className="icon-button" aria-label="Refresh repository board" onClick={() => void load()} disabled={loading}><RefreshIcon /></button>}
-        <button className="primary-button board-create-button" onClick={onCreateWork}>New work</button>
       </header>
       {hermesConnected && error && <div className="board-error" role="alert">{error}</div>}
       <div className="kanban-scroll" aria-label={repositoryPath ? "This Repository board" : "All Work board"}>

@@ -23,9 +23,11 @@ interface ComposerState {
   handoffCard: LocalCard | null;
 }
 
-export function AgentWorkspace({ hermes, repositoryPath, onReviewTask, onOpenRepository }: {
+export function AgentWorkspace({ hermes, repositoryPath, initialLocalCardId, onInitialCardOpened, onReviewTask, onOpenRepository }: {
   hermes: HermesSessionController;
   repositoryPath?: string;
+  initialLocalCardId?: string | null;
+  onInitialCardOpened?: () => void;
   onReviewTask: (target: ReviewTarget) => void;
   onOpenRepository?: (repositoryPath: string) => void;
 }) {
@@ -40,6 +42,13 @@ export function AgentWorkspace({ hermes, repositoryPath, onReviewTask, onOpenRep
   const [hermesTaskToOpen, setHermesTaskToOpen] = useState<string | null>(null);
   const metadataRequest = useRef(0);
   const hermesConnectionKey = hermesConnected ? `${hermes.status.mode ?? ""}:${hermes.status.url ?? ""}` : null;
+
+  useEffect(() => {
+    if (!initialLocalCardId) return;
+    setLocalCardToOpen(initialLocalCardId);
+    setSource("local");
+    onInitialCardOpened?.();
+  }, [initialLocalCardId, onInitialCardOpened]);
 
   useEffect(() => {
     const request = ++metadataRequest.current;
@@ -133,7 +142,6 @@ export function AgentWorkspace({ hermes, repositoryPath, onReviewTask, onOpenRep
           repositoryPath={source === "repository" ? repositoryPath : undefined}
           boards={boards}
           hermesConnected={hermesConnected}
-          onCreateWork={() => openComposer()}
           onOpenLocal={openLocalCard}
           onOpenHermes={openHermesTask}
         />
@@ -155,6 +163,7 @@ export function AgentWorkspace({ hermes, repositoryPath, onReviewTask, onOpenRep
           onCreateWork={(lane) => openComposer({ lane, initialDestination: "local" })}
           onSendToHermes={hermesConnected && boards.length > 0 ? (card) => openComposer({ initialDestination: `hermes:${boards[0].slug}`, handoffCard: card }) : undefined}
           onOpenHermesBoard={openHermesTask}
+          onReviewTask={onReviewTask}
         />
       )}
 

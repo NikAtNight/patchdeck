@@ -86,3 +86,33 @@
 @media (max-width: 760px) {
   .new-work-routing { grid-template-columns: 1fr; }
 }
+
+.workspace-picker {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(110px, 1fr);
+  gap: 10px;
+  width: 100%;
+}
+.workspace-picker label {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+.workspace-picker label:nth-child(3), .workspace-picker > button { grid-column: 1 / -1; }
+.workspace-picker > button { justify-self: start; }
+.workspace-picker input, .workspace-picker select, .local-provider-empty > select {
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text);
+  background: var(--inset);
+  font-size: var(--text-sm);
+}
+.workspace-binding { max-width: 100%; overflow-wrap: anywhere; }
+.local-kanban-card > .task-card-footer:last-child { color: var(--faint); font-size: var(--text-xs); }
