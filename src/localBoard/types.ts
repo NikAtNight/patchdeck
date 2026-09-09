@@ -1,4 +1,5 @@
 import type { AgentRuntimeId, AgentSandbox } from "../providers/types";
+import type { CardWorkspace } from "../providers/workspaces";
 
 export const LOCAL_LANES = ["todo", "in_progress", "review", "done"] as const;
 
@@ -18,6 +19,7 @@ export interface LocalCard {
   body: string;
   lane: LocalLane;
   executionProfileId: string | null;
+  workspace?: CardWorkspace;
   hermesHandoffs: LocalCardHandoff[];
   createdAt: number;
   updatedAt: number;
@@ -39,6 +41,8 @@ export interface LocalRun {
   model: string;
   sandbox: AgentSandbox;
   instructions: string;
+  repositoryPath: string | null;
+  baseBranch: string | null;
   status: LocalRunStatus;
   messages: LocalRunMessage[];
   error: string | null;

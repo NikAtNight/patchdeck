@@ -1,9 +1,10 @@
 import { lazy, Suspense, useEffect, useId, useMemo, useRef, useState } from "react";
-import { compareBranches, listCommits, loadFileDiff, loadWorkingTreeFileDiff, openRepository } from "../api";
+import { compareBranches, compareWorkingTree, listCommits, loadFileDiff, loadWorkingTreeFileDiff, openRepository } from "../api";
 import { buildFileTree } from "../fileTree";
 import { errorMessage } from "../errors";
-import type { CommitInfo, Comparison, FileDiff, RepositoryInfo } from "../types";
+import type { CommitInfo, Comparison, ComparisonMode, FileDiff, RepositoryInfo } from "../types";
 import { addHermesComment, getHermesTask, patchHermesTaskStatus } from "../hermes/api";
+import { BranchPicker } from "./BranchPicker";
 import { FileEditor } from "../editor/FileEditor";
 import {
   readInlineComments,
@@ -12,9 +13,11 @@ import {
   writeInlineComments,
 } from "../review/inlineComments";
 import type { InlineReviewComment, ReviewTarget } from "../review/inlineComments";
-import { readReviewedPaths, writeReviewedPaths } from "../review/reviewedFiles";
+import { readReviewProgress, writeReviewProgress } from "../review/reviewedFiles";
 import { readProjectView, writeProjectView } from "../session";
 import type { ProjectTab } from "../session";
+import { getLocalBoardDocument, latestRunForCard } from "../localBoard/store";
+import { continueLocalRun } from "../localBoard/runtime";
 import type { DiffCommentAnchor } from "./DiffView";
 import { collectVisibleTreeKeys, FileTree, filterTree, flattenTreeFiles } from "./FileTree";
 import { AlertIcon, BranchIcon, CheckIcon, LockIcon, RefreshIcon, SwapIcon } from "./icons";
@@ -67,6 +70,7 @@ export function ProjectPane({
   reviewTarget,
   onReviewTargetUpdated,
   agentAttached,
+  onReturnToCard,
 }: {
   id: string;
   active: boolean;
@@ -75,11 +79,19 @@ export function ProjectPane({
   reviewTarget: ReviewTarget | null;
   onReviewTargetUpdated: (target: ReviewTarget | null) => void;
   agentAttached: boolean;
+  onReturnToCard?: (cardId: string, repositoryPath: string) => void;
 }) {
   const storedProjectView = useMemo(() => readProjectView(initialRepository.path), [initialRepository.path]);
   const initialBranches = initialProjectBranches(initialRepository, storedProjectView);
   const [repository, setRepository] = useState(initialRepository);
-  const [baseBranch, setBaseBranch] = useState(initialBranches.base);
+  const [baseBranch, setBaseBranch] = useState(reviewTarget?.source === "local" && reviewTarget.repositoryPath === initialRepository.path ? reviewTarget.baseBranch ?? initialBranches.base : initialBranches.base);
+  const [comparisonMode, setComparisonMode] = useState<ComparisonMode>(reviewTarget?.source === "local" && reviewTarget.repositoryPath === initialRepository.path ? "workingTree" : storedProjectView?.mode ?? "branch");
+  const [liveRefresh, setLiveRefresh] = useState(0);
+  const lastLiveRefresh = useRef(0);
+  const [livePaused, setLivePaused] = useState(false);
+  const [reviewDraftOpen, setReviewDraftOpen] = useState(false);
+  const [feedbackSending, setFeedbackSending] = useState(false);
+  const feedbackInFlight = useRef(false);
   const [compareBranch, setCompareBranch] = useState(initialBranches.compare);
   const [comparison, setComparison] = useState<Comparison | null>(null);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
@@ -118,6 +130,10 @@ export function ProjectPane({
   const branchesRef = useRef({ base: baseBranch, compare: compareBranch });
   branchesRef.current = { base: baseBranch, compare: compareBranch };
   const controlId = useId();
+  const comparisonRef = useRef(comparison);
+  comparisonRef.current = comparison;
+  const selectedPathRef = useRef(selectedPath);
+  selectedPathRef.current = selectedPath;
 
   const selectedFile = useMemo(
     () => comparison?.files.find((file) => file.path === selectedPath) ?? null,
@@ -139,9 +155,10 @@ export function ProjectPane({
     && comment.board === reviewTarget.board
     && comment.taskId === reviewTarget.taskId
     && comment.baseCommit === comparison.mergeBase
-    && comment.compareCommit === comparison.compareCommit
+    && (comment.source ?? "hermes") === (reviewTarget.source ?? "hermes")
+    && (comment.fileFingerprint ? comment.fileFingerprint === comparison.files.find((file) => file.path === comment.path)?.fingerprint : comment.compareCommit === comparison.compareCommit)
   ), [allReviewComments, comparison, repository.path, reviewTarget]);
-  const projectReviewTarget = agentAttached && reviewTarget
+  const projectReviewTarget = reviewTarget && (reviewTarget.source === "local" || agentAttached)
     && (!reviewTarget.repositoryPath || reviewTarget.repositoryPath === repository.path)
     ? reviewTarget
     : null;
@@ -156,7 +173,12 @@ export function ProjectPane({
       setViewedPaths(new Set());
       return;
     }
-    setViewedPaths(readReviewedPaths(repository.path, comparison.mergeBase, comparison.compareCommit));
+    const progress = readReviewProgress(repository.path, comparison);
+    setViewedPaths(progress.viewed);
+    // Seed content identities for Viewed marks saved by older versions.
+    if (comparison.mode !== "workingTree" && progress.viewed.size > 0) {
+      writeReviewProgress(repository.path, comparison, progress.viewed);
+    }
   }, [comparison, repository.path]);
 
   useEffect(() => {
@@ -168,7 +190,8 @@ export function ProjectPane({
           comment.repositoryPath !== repository.path
           || comment.board !== projectReviewTarget.board
           || comment.taskId !== projectReviewTarget.taskId
-          || comment.compareCommit === comparison.compareCommit
+          || (comment.source ?? "hermes") !== (projectReviewTarget.source ?? "hermes")
+          || (comment.fileFingerprint ? comment.fileFingerprint === comparison.files.find((file) => file.path === comment.path)?.fingerprint : comment.compareCommit === comparison.compareCommit)
           || comment.state === "outdated"
         ) {
           return comment;
@@ -189,10 +212,11 @@ export function ProjectPane({
         if (
           comment.state === "outdated"
           || comment.repositoryPath !== repository.path
+          || (comment.source ?? "hermes") !== (projectReviewTarget?.source ?? "hermes")
           || comment.path !== selectedFile.path
           || !comparison
           || comment.baseCommit !== comparison.mergeBase
-          || comment.compareCommit !== comparison.compareCommit
+          || (comment.fileFingerprint ? comment.fileFingerprint !== selectedFile.fingerprint : comment.compareCommit !== comparison.compareCommit)
           || inlineCommentMatchesDiff(comment, selectedDiff)
         ) {
           return comment;
@@ -203,25 +227,25 @@ export function ProjectPane({
       if (changed) writeInlineComments(updated);
       return changed ? updated : current;
     });
-  }, [comparison, repository.path, selectedDiff, selectedFile]);
+  }, [comparison, repository.path, selectedDiff, selectedFile, projectReviewTarget]);
 
   useEffect(() => {
     if (active) setHasActivated(true);
   }, [active]);
 
   useEffect(() => {
-    if (!agentAttached) setEditingPath(null);
-  }, [agentAttached]);
+    if (!agentAttached && projectReviewTarget?.source !== "local") setEditingPath(null);
+  }, [agentAttached, projectReviewTarget?.source]);
 
   useEffect(() => {
     // Before the first comparison resolves the selection is a transient null;
     // persisting it would clobber the stored view this pane is about to restore.
     if (restoreSelectedPath.current) return;
-    writeProjectView(repository.path, { baseBranch, compareBranch, selectedPath });
-  }, [baseBranch, compareBranch, repository.path, selectedPath]);
+    writeProjectView(repository.path, { baseBranch, compareBranch, selectedPath, mode: comparisonMode });
+  }, [baseBranch, compareBranch, repository.path, selectedPath, comparisonMode]);
 
   useEffect(() => {
-    if (!hasActivated || !baseBranch || !compareBranch) {
+    if (comparisonMode !== "branch" || !hasActivated || !baseBranch || !compareBranch) {
       return;
     }
 
@@ -237,9 +261,8 @@ export function ProjectPane({
         setComparison(nextComparison);
         setCommits(null);
         setStaleComparison(false);
-        const cachePrefix = `${nextComparison.mergeBase}:${nextComparison.compareCommit}:`;
-        setDiffs((current) => pruneCache(current, cachePrefix));
-        setDiffErrors((current) => pruneCache(current, cachePrefix));
+        setDiffs((current) => pruneCache(current, nextComparison));
+        setDiffErrors((current) => pruneCache(current, nextComparison));
         setTreeFocusKey(null);
         setSelectedPath((current) => {
           if (restoreSelectedPath.current) {
@@ -263,7 +286,90 @@ export function ProjectPane({
       .finally(() => {
         if (request === comparisonRequest.current) setLoadingComparison(false);
       });
-  }, [hasActivated, repository, baseBranch, compareBranch]);
+  }, [hasActivated, repository, baseBranch, compareBranch, comparisonMode]);
+
+  useEffect(() => {
+    if (reviewTarget?.source !== "local" || reviewTarget.repositoryPath !== repository.path) return;
+    setComparisonMode("workingTree");
+    if (reviewTarget.baseBranch) setBaseBranch(reviewTarget.baseBranch);
+  }, [reviewTarget?.source, reviewTarget?.taskId, reviewTarget?.repositoryPath, reviewTarget?.baseBranch, repository.path]);
+
+  useEffect(() => {
+    if (comparisonMode !== "workingTree" || !active || !baseBranch) return;
+    let disposed = false;
+    let inFlight = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const request = ++comparisonRequest.current;
+    const previous = comparisonRef.current;
+    const sameContext = previous?.mode === "workingTree" && previous.baseBranch === baseBranch;
+    const manualRefresh = lastLiveRefresh.current !== liveRefresh;
+    lastLiveRefresh.current = liveRefresh;
+    if (livePaused && sameContext && !manualRefresh) return;
+    if (!sameContext) setLoadingComparison(true);
+
+    async function poll() {
+      if (disposed || inFlight) return;
+      if (document.visibilityState === "hidden" || editingPath || reviewDraftOpen || feedbackSending) {
+        timer = setTimeout(() => void poll(), 2_000);
+        return;
+      }
+      inFlight = true;
+      try {
+        const next = await compareWorkingTree(repository.path, baseBranch);
+        if (disposed || request !== comparisonRequest.current) return;
+        const before = comparisonRef.current;
+        if (!before || before.mode !== "workingTree" || before.revision !== next.revision || !next.revision
+          || before.compareCommit !== next.compareCommit || before.compareBranch !== next.compareBranch
+          || before.mergeBase !== next.mergeBase || before.baseCommit !== next.baseCommit) {
+          const path = selectedPathRef.current;
+          const nextFile = next.files.find((file) => file.path === path);
+          const oldFile = before?.files.find((file) => file.path === path);
+          // Load the visible patch before swapping revisions so its scroll
+          // container and any unchanged file caches stay mounted.
+          if (nextFile && before?.mode === "workingTree" && oldFile?.fingerprint !== nextFile.fingerprint) {
+            const diff = await loadWorkingTreeFileDiff({ repositoryPath: repository.path, mergeBase: next.mergeBase, path: nextFile.path, oldPath: nextFile.oldPath });
+            if (disposed || request !== comparisonRequest.current) return;
+            setDiffs((current) => ({ ...pruneCache(current, next), [diffCacheKey(next, nextFile.path)]: diff }));
+          } else {
+            setDiffs((current) => pruneCache(current, next));
+          }
+          setDiffErrors((current) => pruneCache(current, next));
+          setComparison(next);
+          setSelectedPath((current) => current && next.files.some((file) => file.path === current)
+            ? current
+            : restoreSelectedPath.current && storedProjectView?.selectedPath && next.files.some((file) => file.path === storedProjectView.selectedPath)
+              ? storedProjectView.selectedPath
+              : next.files[0]?.path ?? null);
+          restoreSelectedPath.current = false;
+        }
+        setError(null);
+        setStaleComparison(false);
+      } catch (reason) {
+        if (!disposed && request === comparisonRequest.current) setError(`Live comparison could not refresh: ${errorMessage(reason)}`);
+      } finally {
+        inFlight = false;
+        if (!disposed && request === comparisonRequest.current) {
+          setLoadingComparison(false);
+          if (!livePaused) timer = setTimeout(() => void poll(), 2_000);
+        }
+      }
+    }
+    void poll();
+    const onVisible = () => {
+      if (!livePaused && document.visibilityState !== "hidden") {
+        if (timer) clearTimeout(timer);
+        void poll();
+      }
+    };
+    window.addEventListener("focus", onVisible);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      disposed = true;
+      if (timer) clearTimeout(timer);
+      window.removeEventListener("focus", onVisible);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [active, baseBranch, comparisonMode, repository.path, liveRefresh, livePaused, editingPath, reviewDraftOpen, feedbackSending]);
 
   useEffect(() => {
     if (!comparison) {
@@ -302,7 +408,7 @@ export function ProjectPane({
   }
 
   useEffect(() => {
-    if (!active || !comparison) return;
+    if (!active || !comparison || comparisonMode !== "branch") return;
 
     const checkForStaleComparison = () => {
       const now = Date.now();
@@ -335,7 +441,7 @@ export function ProjectPane({
       window.removeEventListener("focus", checkForStaleComparison);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [active, baseBranch, compareBranch, comparison, repository.path]);
+  }, [active, baseBranch, compareBranch, comparison, repository.path, comparisonMode]);
 
   useEffect(() => {
     if (!active) return;
@@ -398,7 +504,7 @@ export function ProjectPane({
 
     const request = ++diffRequest.current;
     setLoadingDiff(true);
-    const load = workingTreeDiffPaths.has(selectedFile.path)
+    const load = comparison.mode === "workingTree" || workingTreeDiffPaths.has(selectedFile.path)
       ? loadWorkingTreeFileDiff({
           repositoryPath: repository.path,
           mergeBase: comparison.mergeBase,
@@ -427,6 +533,10 @@ export function ProjectPane({
   }, [repository, comparison, selectedFile, diffs, diffErrors, workingTreeDiffPaths]);
 
   async function refresh() {
+    if (comparisonMode === "workingTree") {
+      setLiveRefresh((current) => current + 1);
+      return;
+    }
     const request = ++repositoryRequest.current;
     comparisonRequest.current += 1;
     diffRequest.current += 1;
@@ -494,7 +604,7 @@ export function ProjectPane({
     const marking = !next.has(path);
     if (marking) next.add(path);
     else next.delete(path);
-    writeReviewedPaths(repository.path, comparison.mergeBase, comparison.compareCommit, next);
+    writeReviewProgress(repository.path, comparison, next);
     setViewedPaths(next);
     // Marking the open file as viewed advances to the next unviewed file in
     // sidebar order, so a review flows file to file without extra clicks.
@@ -510,6 +620,8 @@ export function ProjectPane({
     const next: InlineReviewComment = {
       id: `review-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
       repositoryPath: repository.path,
+      source: projectReviewTarget.source,
+      fileFingerprint: selectedFile.fingerprint,
       board: projectReviewTarget.board,
       taskId: projectReviewTarget.taskId,
       baseCommit: comparison.mergeBase,
@@ -544,9 +656,11 @@ export function ProjectPane({
   }
 
   async function sendReviewFeedback() {
-    if (!projectReviewTarget) return;
+    if (!projectReviewTarget || feedbackInFlight.current) return;
     const pending = reviewComments.filter((comment) => comment.state === "open" && comment.sentAt === null);
     if (pending.length === 0) return;
+    feedbackInFlight.current = true;
+    setFeedbackSending(true);
     setFeedbackStatus("Sending review feedback…");
     const body = [
       "Local code review feedback",
@@ -559,6 +673,34 @@ export function ProjectPane({
       ]),
     ].join("\n");
     try {
+      if (projectReviewTarget.source === "local") {
+        const card = getLocalBoardDocument().cards.find((candidate) => candidate.id === projectReviewTarget.taskId);
+        const run = card ? latestRunForCard(card.id) : undefined;
+        if (!card || !run?.sessionId) throw new Error("Open the card and start an agent conversation before sending feedback.");
+        if (!run.repositoryPath || run.repositoryPath !== repository.path || card.workspace?.worktreePath !== run.repositoryPath) {
+          throw new Error("This review does not match the conversation's recorded workspace. Open Review changes from the card again.");
+        }
+        if (run.status === "running" || run.status === "starting") throw new Error("Wait for the active agent turn to finish before sending feedback.");
+        if (comparisonMode !== "workingTree") throw new Error("Switch to Working tree to send feedback on the card's current changes.");
+        const current = await compareWorkingTree(repository.path, baseBranch);
+        if (pending.some((comment) => comment.baseCommit !== current.mergeBase || !comment.fileFingerprint || comment.fileFingerprint !== current.files.find((file) => file.path === comment.path)?.fingerprint)) {
+          setLiveRefresh((value) => value + 1);
+          throw new Error("Files changed since these comments were written. Refresh the review and add feedback on the current changes.");
+        }
+        await continueLocalRun(run, run.repositoryPath, body);
+        const updatedRun = getLocalBoardDocument().runs.find((candidate) => candidate.id === run.id);
+        if (updatedRun?.status === "failed" || updatedRun?.status === "cancelled") throw new Error(updatedRun.error ?? "Feedback could not be delivered. Your comments are still unsent.");
+        const sentAt = Date.now();
+        const ids = new Set(pending.map((comment) => comment.id));
+        setAllReviewComments((current) => {
+          const updated = current.map((comment) => ids.has(comment.id) ? { ...comment, sentAt } : comment);
+          writeInlineComments(updated);
+          return updated;
+        });
+        onReviewTargetUpdated({ ...projectReviewTarget, status: "in_progress" });
+        setFeedbackStatus("Feedback sent to the card's agent conversation.");
+        return;
+      }
       let currentStatus: string | null = null;
       try {
         currentStatus = (await getHermesTask(projectReviewTarget.board, projectReviewTarget.taskId)).task.status;
@@ -590,6 +732,9 @@ export function ProjectPane({
       }
     } catch (reason) {
       setFeedbackStatus(errorMessage(reason));
+    } finally {
+      feedbackInFlight.current = false;
+      setFeedbackSending(false);
     }
   }
 
@@ -598,23 +743,24 @@ export function ProjectPane({
       <section className="compare-bar" aria-label="Branch comparison controls">
         <div className="branch-field">
           <label htmlFor={`${controlId}-base`}>Base</label>
-          <select id={`${controlId}-base`} value={baseBranch} title={baseBranch} disabled={repository.branches.length === 0} onChange={(event) => setBaseBranch(event.target.value)}>
-            {repository.branches.length === 0 && <option value="">No branches</option>}
-            {repository.branches.length > 0 && !baseBranch && <option value="">Select a branch</option>}
-            {repository.branches.map((branch) => <option key={branch.name}>{branch.name}</option>)}
-          </select>
+          <BranchPicker id={`${controlId}-base`} branches={repository.branches} value={baseBranch} onChange={setBaseBranch} />
         </div>
-        <button className="swap-button" onClick={swapBranches} aria-label="Swap base and compare branches">
+        <button className="swap-button" disabled={comparisonMode === "workingTree"} onClick={swapBranches} aria-label="Swap base and compare branches">
           <SwapIcon />
         </button>
         <div className="branch-field">
-          <label htmlFor={`${controlId}-compare`}>Compare</label>
-          <select id={`${controlId}-compare`} value={compareBranch} title={compareBranch} disabled={repository.branches.length === 0} onChange={(event) => setCompareBranch(event.target.value)}>
-            {repository.branches.length === 0 && <option value="">No branches</option>}
-            {repository.branches.length > 0 && !compareBranch && <option value="">Select a branch</option>}
-            {repository.branches.map((branch) => <option key={branch.name}>{branch.name}</option>)}
-          </select>
+          <label htmlFor={`${controlId}-compare`}>{comparisonMode === "workingTree" ? "Branch" : "Compare"}</label>
+          {comparisonMode === "workingTree" ? <span className="working-tree-branch" title={comparison?.compareBranch ?? repository.currentBranch ?? "HEAD"}>{comparison?.compareBranch ?? repository.currentBranch ?? "HEAD"}</span> : <BranchPicker id={`${controlId}-compare`} branches={repository.branches} value={compareBranch} onChange={setCompareBranch} />}
         </div>
+        <select className="comparison-mode" aria-label="Comparison mode" value={comparisonMode} onChange={(event) => {
+          setComparisonMode(event.target.value as ComparisonMode);
+          setComparison(null);
+          setWorkingTreeDiffPaths(new Set());
+          setReviewDraftOpen(false);
+        }}>
+          <option value="branch">Committed</option>
+          <option value="workingTree">Working tree</option>
+        </select>
         <div className="comparison-summary" aria-live="polite">
           {repository.branches.length === 0 ? (
             <span>No local branches</span>
@@ -635,9 +781,18 @@ export function ProjectPane({
         <button className="icon-button" onClick={refresh} disabled={loadingRepository || loadingComparison} aria-label="Refresh comparison" title="Refresh comparison">
           <RefreshIcon />
         </button>
-        {!agentAttached && <span className="readonly-badge"><LockIcon /> Review-only</span>}
+        {comparisonMode === "workingTree" ? <button className={`live-review-toggle${livePaused ? "" : " active"}`} aria-pressed={!livePaused} title="Pause or resume live file updates" onClick={() => setLivePaused((current) => !current)}>{livePaused ? "Paused" : "Live"}</button> : !agentAttached && !projectReviewTarget && <span className="readonly-badge"><LockIcon /> Review-only</span>}
       </section>
 
+      {projectReviewTarget?.source === "local" && <div className="local-review-context">
+        <span>Reviewing <strong>{projectReviewTarget.title}</strong></span>
+        <span>{comparisonMode === "workingTree" ? "Includes committed and uncommitted work" : "Committed changes only"}</span>
+        {onReturnToCard && <button onClick={() => {
+          const card = getLocalBoardDocument().cards.find((candidate) => candidate.id === projectReviewTarget.taskId);
+          if (card) onReturnToCard(card.id, card.repositoryPath);
+        }}>Back to card</button>}
+        <button aria-label="Close card review" onClick={() => onReviewTargetUpdated(null)}>×</button>
+      </div>}
       {error && <div className="workspace-error"><ErrorBanner message={error} /></div>}
 
       {staleComparison && (
@@ -698,6 +853,7 @@ export function ProjectPane({
                     collapsedFolders={collapsedFolders}
                     selectedPath={selectedPath}
                     viewedPaths={viewedPaths}
+                    changedPaths={comparison ? readReviewProgress(repository.path, comparison).changed : undefined}
                     focusKey={effectiveTreeFocusKey}
                     onFocus={setTreeFocusKey}
                     onSelect={setSelectedPath}
@@ -750,11 +906,11 @@ export function ProjectPane({
           ) : !comparison ? (
             <ComparisonUnavailable />
           ) : comparison && comparison.files.length === 0 ? (
-            <EmptyComparison base={baseBranch} compare={compareBranch} />
+            <EmptyComparison base={baseBranch} compare={compareBranch} workingTree={comparisonMode === "workingTree"} />
           ) : selectedFile ? (
             <Suspense fallback={<DiffSkeleton />}>
               <DiffView
-                key={`${comparison.mergeBase}:${comparison.compareCommit}:${selectedFile.path}`}
+                key={`${comparisonMode}:${baseBranch}:${compareBranch}:${selectedFile.path}`}
                 file={selectedFile}
                 diff={selectedDiff}
                 error={diffErrors[diffCacheKey(comparison, selectedFile.path)]}
@@ -762,14 +918,16 @@ export function ProjectPane({
                 wrapLines={wrapLines}
                 onToggleWrap={() => setWrapLines((current) => !current)}
                 onRetry={retrySelectedDiff}
-                showEdit={agentAttached}
-                canEdit={agentAttached && repository.currentBranch === compareBranch && selectedFile.status !== "deleted" && !selectedFile.binary}
+                showEdit={agentAttached || projectReviewTarget?.source === "local"}
+                canEdit={(agentAttached || projectReviewTarget?.source === "local") && (comparisonMode === "workingTree" || repository.currentBranch === compareBranch) && selectedFile.status !== "deleted" && !selectedFile.binary}
                 onEdit={() => setEditingPath(selectedFile.path)}
                 reviewTarget={projectReviewTarget}
                 comments={reviewComments.filter((comment) => comment.path === selectedFile.path)}
                 onAddComment={addInlineComment}
                 onUpdateComment={updateInlineComment}
                 onSendFeedback={sendReviewFeedback}
+                feedbackSending={feedbackSending}
+                onCommentEditingChange={setReviewDraftOpen}
                 feedbackStatus={feedbackStatus}
                 onClearReviewTarget={() => onReviewTargetUpdated(null)}
                 viewed={viewedPaths.has(selectedFile.path)}
@@ -781,13 +939,14 @@ export function ProjectPane({
           )}
         </section>
       </main>
-      {agentAttached && editingPath && (
+      {(agentAttached || projectReviewTarget?.source === "local") && editingPath && (
         <FileEditor
           repositoryPath={repository.path}
           path={editingPath}
           onClose={() => setEditingPath(null)}
           onSaved={() => {
             if (!comparison || !selectedFile) return;
+            if (comparisonMode === "workingTree") { setLiveRefresh((current) => current + 1); return; }
             setWorkingTreeDiffPaths((current) => new Set(current).add(selectedFile.path));
             const key = diffCacheKey(comparison, selectedFile.path);
             setDiffs((current) => {
@@ -839,28 +998,24 @@ function relativeTime(timestamp: number) {
 }
 
 function diffCacheKey(comparison: Comparison, path: string) {
-  return `${comparison.mergeBase}:${comparison.compareCommit}:${path}`;
+  const fingerprint = comparison.files.find((file) => file.path === path)?.fingerprint;
+  return `${comparison.mode ?? "branch"}:${fingerprint ?? `${comparison.mergeBase}:${comparison.compareCommit}`}:${path}`;
 }
 
 // Drops cache entries from previous comparisons so the per-project diff cache
 // cannot grow without bound across refreshes and branch switches.
-function pruneCache<T>(cache: Record<string, T>, prefix: string): Record<string, T> {
-  const keys = Object.keys(cache);
-  if (keys.every((key) => key.startsWith(prefix))) return cache;
-  const next: Record<string, T> = {};
-  for (const key of keys) {
-    if (key.startsWith(prefix)) next[key] = cache[key];
-  }
-  return next;
+function pruneCache<T>(cache: Record<string, T>, comparison: Comparison): Record<string, T> {
+  const allowed = new Set(comparison.files.map((file) => diffCacheKey(comparison, file.path)));
+  return Object.fromEntries(Object.entries(cache).filter(([key]) => allowed.has(key)));
 }
 
-function EmptyComparison({ base, compare }: { base: string; compare: string }) {
+function EmptyComparison({ base, compare, workingTree = false }: { base: string; compare: string; workingTree?: boolean }) {
   return (
     <div className="empty-comparison">
       <div className="empty-orbit"><CheckIcon /></div>
       <p className="eyebrow">ALL CLEAR</p>
-      <h2>No changes between these branches</h2>
-      <p><code>{compare}</code> has no committed changes relative to the merge base with <code>{base}</code>.</p>
+      <h2>{workingTree ? "No changes in this working tree" : "No changes between these branches"}</h2>
+      <p>{workingTree ? "The working tree matches the merge base with " : <><code>{compare}</code> has no committed changes relative to the merge base with </>}<code>{base}</code>.</p>
     </div>
   );
 }

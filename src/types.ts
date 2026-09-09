@@ -25,7 +25,10 @@ export type FileStatus =
   | "unmerged"
   | "unknown";
 
+export type ComparisonMode = "branch" | "workingTree";
+
 export interface ChangedFile {
+  fingerprint?: string;
   path: string;
   oldPath: string | null;
   status: FileStatus;
@@ -35,6 +38,8 @@ export interface ChangedFile {
 }
 
 export interface Comparison {
+  mode?: ComparisonMode;
+  revision?: string;
   baseBranch: string;
   compareBranch: string;
   baseCommit: string;

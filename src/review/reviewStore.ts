@@ -20,6 +20,7 @@ export interface ReviewStoreDocument {
   inlineComments: InlineReviewComment[];
   reviewTargets: Record<string, ReviewTarget>;
   reviewedFiles: Record<string, string[]>;
+  reviewedFingerprints: Record<string, Record<string, string>>;
 }
 
 let document: ReviewStoreDocument = emptyDocument();
@@ -100,11 +101,22 @@ export function writeStoredReviewedFiles(reviewedFiles: Record<string, string[]>
   mirrorAndPersist();
 }
 
+export function readStoredReviewedFingerprints() {
+  return document.reviewedFingerprints;
+}
+
+export function writeStoredReviewedFingerprints(value: Record<string, Record<string, string>>) {
+  document = touch({ ...document, reviewedFingerprints: sanitizeFingerprints(value) });
+  mirrorAndPersist();
+}
+
 export function isReviewTarget(value: unknown): value is ReviewTarget {
   if (!value || typeof value !== "object") return false;
   const candidate = value as Record<string, unknown>;
   return ["board", "taskId", "title", "status"].every((key) => typeof candidate[key] === "string")
-    && (candidate.repositoryPath === undefined || typeof candidate.repositoryPath === "string");
+    && (candidate.repositoryPath === undefined || typeof candidate.repositoryPath === "string")
+    && (candidate.source === undefined || candidate.source === "local" || candidate.source === "hermes")
+    && (candidate.baseBranch === undefined || typeof candidate.baseBranch === "string");
 }
 
 export function isInlineComment(value: unknown): value is InlineReviewComment {
@@ -135,6 +147,8 @@ function sanitizeInlineComment(value: unknown): InlineReviewComment | null {
     && (candidate.sentAt === null || typeof candidate.sentAt === "number");
   if (!valid) return null;
   return {
+    ...(candidate.source === "local" || candidate.source === "hermes" ? { source: candidate.source } : {}),
+    ...(typeof candidate.fileFingerprint === "string" ? { fileFingerprint: candidate.fileFingerprint } : {}),
     id: candidate.id as string,
     repositoryPath: candidate.repositoryPath as string,
     board: candidate.board as string,
@@ -162,7 +176,7 @@ function sanitizeInlineComments(value: unknown[]): InlineReviewComment[] {
 }
 
 function emptyDocument(): ReviewStoreDocument {
-  return { version: 2, updatedAt: 0, inlineComments: [], reviewTargets: {}, reviewedFiles: {} };
+  return { version: 2, updatedAt: 0, inlineComments: [], reviewTargets: {}, reviewedFiles: {}, reviewedFingerprints: {} };
 }
 
 function touch(next: ReviewStoreDocument): ReviewStoreDocument {
@@ -194,6 +208,7 @@ function readLocalDocument(): ReviewStoreDocument | null {
     inlineComments: Array.isArray(comments) ? sanitizeInlineComments(comments).slice(-2_000) : [],
     reviewTargets: targetToMap(target),
     reviewedFiles: sanitizeReviewedFiles(readLegacyJson(REVIEWED_FILES_KEY)),
+    reviewedFingerprints: {},
   } satisfies ReviewStoreDocument;
 }
 
@@ -211,6 +226,7 @@ function sanitizeDocument(value: unknown): ReviewStoreDocument | null {
       ? sanitizeReviewTargets(candidate.reviewTargets)
       : targetToMap(candidate.reviewTarget),
     reviewedFiles: sanitizeReviewedFiles(candidate.reviewedFiles),
+    reviewedFingerprints: sanitizeFingerprints(candidate.reviewedFingerprints),
   };
 }
 
@@ -230,6 +246,15 @@ function sanitizeReviewedFiles(value: unknown): Record<string, string[]> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   return Object.fromEntries(Object.entries(value as Record<string, unknown>)
     .map(([key, paths]) => [key, Array.isArray(paths) ? paths.filter((path): path is string => typeof path === "string") : []]));
+}
+
+function sanitizeFingerprints(value: unknown): Record<string, Record<string, string>> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value).slice(-60).map(([key, paths]) => [key,
+    paths && typeof paths === "object" && !Array.isArray(paths)
+      ? Object.fromEntries(Object.entries(paths).filter((entry): entry is [string, string] => typeof entry[1] === "string").slice(-5_000))
+      : {},
+  ]));
 }
 
 function readLegacyJson(key: string): unknown {
@@ -276,7 +301,12 @@ function removeLegacyValue(key: string) {
 }
 
 function mirrorAndPersist() {
-  writeLegacyValue(MIRROR_KEY, JSON.stringify(document));
+  try {
+    writeLegacyValue(MIRROR_KEY, persistableContent());
+  } catch (error) {
+    persistenceError = toError(error);
+    writeLegacyValue(MIRROR_KEY, JSON.stringify(document));
+  }
   schedulePersist();
 }
 
@@ -337,11 +367,27 @@ function persistableContent(): string {
     inlineComments: [...sent.slice(-MAX_SENT_COMMENTS_WHEN_PRUNING), ...unsent],
   };
   content = JSON.stringify(pruned);
-  if (utf8Bytes(content) <= MAX_PERSIST_BYTES) return content;
+  if (utf8Bytes(content) <= MAX_PERSIST_BYTES) {
+    document = pruned;
+    return content;
+  }
 
   const reviewedEntries = Object.entries(pruned.reviewedFiles);
-  content = JSON.stringify({ ...pruned, reviewedFiles: Object.fromEntries(reviewedEntries.slice(-100)) });
-  if (utf8Bytes(content) <= MAX_PERSIST_BYTES) return content;
+  pruned.reviewedFiles = Object.fromEntries(reviewedEntries.slice(-100));
+  content = JSON.stringify(pruned);
+  if (utf8Bytes(content) <= MAX_PERSIST_BYTES) {
+    document = pruned;
+    return content;
+  }
+  pruned.reviewedFingerprints = { ...pruned.reviewedFingerprints };
+  for (const key of Object.keys(pruned.reviewedFingerprints)) {
+    delete pruned.reviewedFingerprints[key];
+    content = JSON.stringify(pruned);
+    if (utf8Bytes(content) <= MAX_PERSIST_BYTES) {
+      document = pruned;
+      return content;
+    }
+  }
   throw new Error("Review store exceeds the native persistence limit; unsent comments remain available in the current review session.");
 }
 

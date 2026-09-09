@@ -69,7 +69,12 @@ describe("unified agent workspace", () => {
     localStorage.clear();
     resetLocalBoardStore();
     resetExecutionProfiles();
-    mocks.invoke.mockReset().mockResolvedValue(null);
+    mocks.invoke.mockReset().mockImplementation((command: string) => {
+      if (command === "open_repository") return Promise.resolve({ branches: [{ name: "main", commit: "abc" }], currentBranch: "main", suggestedBaseBranch: "main", path: "/work/product", name: "product" });
+      if (command === "create_card_worktree") return Promise.resolve({ repositoryPath: "/work/product", worktreePath: "/worktrees/card", branch: "work/card", baseBranch: "main" });
+      if (command === "list_card_worktrees") return Promise.resolve([]);
+      return Promise.resolve(null);
+    });
     mocks.listHermesBoards.mockReset().mockResolvedValue({
       current: "sxcl",
       boards: [
@@ -249,8 +254,28 @@ describe("unified agent workspace", () => {
     await waitFor(() => expect(createAndRun).toBeEnabled());
     fireEvent.click(createAndRun);
 
-    await waitFor(() => expect(mocks.startRuntime).toHaveBeenCalledWith(expect.objectContaining({ runtimeId: "claude", repositoryPath: "/work/product" })));
+    await waitFor(() => expect(mocks.startRuntime).toHaveBeenCalledWith(expect.objectContaining({ runtimeId: "claude", repositoryPath: "/worktrees/card" })));
     expect(getLocalBoardDocument().cards[0]).toMatchObject({ title: "Run with Claude", executionProfileId: "claude-workspace" });
+  });
+
+  it("reports workspace preparation failure without leaving a partial card or starting an agent", async () => {
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "open_repository") return Promise.resolve({ branches: [{ name: "main", commit: "abc" }], currentBranch: "main", suggestedBaseBranch: "main", path: "/work/product", name: "product" });
+      if (command === "create_card_worktree") return Promise.reject(new Error("worktree creation failed"));
+      if (command === "list_card_worktrees") return Promise.resolve([]);
+      return Promise.resolve(null);
+    });
+    render(<AgentWorkspace hermes={session} repositoryPath="/work/product" onReviewTask={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "+ New work" }));
+    fireEvent.change(screen.getByLabelText("Executor"), { target: { value: "codex-workspace" } });
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Cannot prepare" } });
+    const createAndRun = screen.getByRole("button", { name: "Create & run" });
+    await waitFor(() => expect(createAndRun).toBeEnabled());
+    fireEvent.click(createAndRun);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("worktree creation failed");
+    expect(getLocalBoardDocument().cards).toHaveLength(0);
+    expect(mocks.startRuntime).not.toHaveBeenCalled();
   });
 
   it("sends an explicit Hermes handoff and visibly preserves its local source", async () => {

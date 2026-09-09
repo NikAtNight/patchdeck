@@ -474,7 +474,6 @@ button:disabled { cursor: default; opacity: 0.55; transform: none !important; }
 .branch-field:hover { background: var(--surface-hover-subtle); }
 .branch-field:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .branch-field label { flex: 0 0 auto; color: var(--muted); font-size: var(--text-sm); font-weight: 500; }
-.branch-field select { min-width: 0; width: 100%; height: 100%; padding: 0 22px 0 0; border: 0; outline: 0; background: transparent; color: var(--text); font-size: var(--text-md); font-weight: 600; }
 .swap-button, .icon-button { width: 36px; height: 36px; display: grid; place-items: center; flex: 0 0 auto; padding: 0; background: transparent; color: var(--muted); }
 .swap-button { border-color: transparent; }
 .swap-button svg { width: 17px; }
@@ -739,3 +738,16 @@ button:disabled { cursor: default; opacity: 0.55; transform: none !important; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
 }
+
+/* Live review controls share the existing compact toolbar. */
+.working-tree-branch { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: var(--text-md); font-weight: 600; }
+.comparison-mode { max-width: 126px; height: 32px; padding: 0 5px; border: 1px solid transparent; border-radius: 6px; background: var(--surface-1); color: var(--muted); font-size: var(--text-sm); }
+.live-review-toggle { height: 28px; padding: 0 8px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--muted); font-size: var(--text-xs); cursor: pointer; }
+.live-review-toggle.active { color: var(--success-text); background: var(--success-soft); }
+.local-review-context { min-width: 0; display: flex; align-items: center; gap: 12px; min-height: 30px; padding: 2px 14px; border-bottom: 1px solid var(--border); background: var(--accent-soft); color: var(--muted); font-size: var(--text-xs); }
+.local-review-context > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.local-review-context > span:nth-child(2) { margin-left: auto; white-space: nowrap; }
+.local-review-context strong { color: var(--text); font-weight: 600; }
+.local-review-context button { flex-shrink: 0; height: 26px; padding: 0 6px; border: 0; border-radius: 5px; background: transparent; color: var(--accent-bright); cursor: pointer; font-size: inherit; }
+.local-review-context button:hover { background: var(--surface-hover); }
+.rereview-marker { color: var(--warning); font-size: var(--text-xs); }

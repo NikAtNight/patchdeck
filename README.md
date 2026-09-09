@@ -1,6 +1,6 @@
 # Patchdeck
 
-A local-first desktop app for reviewing committed changes between Git branches and running agent work beside the code. It provides a pull-request-style file tree, line counts, unified diffs, a persistent local Kanban, Codex and Claude Code conversations, and optional Hermes boards without automatically publishing code.
+A local-first desktop app for reviewing Git branch and live working-tree changes, with agent work beside the code. It provides a pull-request-style file tree, line counts, unified diffs, a persistent local Kanban, Codex and Claude Code conversations, and optional Hermes boards without automatically publishing code.
 
 The MVP targets macOS. It is built with Tauri 2, React, TypeScript, and Rust.
 
@@ -16,7 +16,8 @@ The MVP targets macOS. It is built with Tauri 2, React, TypeScript, and Rust.
 - Shows changed paths in a collapsible folder tree with file statuses, additions, and deletions.
 - Renders unified diffs with old and new line numbers and IDE-style syntax coloring.
 - Wraps long diff lines by default, with a per-project toggle for horizontal scrolling.
-- Tracks which changed files have been viewed for the exact repository, merge base, and compare commit.
+- Reviews committed, staged, unstaged, and nonignored new files in Working tree mode, with live refresh and a pause control.
+- Keeps Viewed marks for unchanged file content across commits and flags files changed since the last review.
 - Handles added, modified, deleted, renamed, and binary files.
 - Opens multiple repositories in tabs while preserving each project's comparison and selected file.
 - Restores open project tabs and the active project after the app is relaunched.
@@ -26,6 +27,8 @@ The MVP targets macOS. It is built with Tauri 2, React, TypeScript, and Rust.
 - Shows Hermes connection health and active worker count in the top-right.
 - Keeps a repository-scoped local Kanban available when Hermes is disconnected, with To do, In progress, Review, and Done lanes.
 - Routes local cards through reusable Codex or Claude Code execution profiles and streams normalized agent messages and activity back into the card drawer.
+- Binds local cards to isolated worktrees or explicitly attached existing work, and blocks simultaneous writable runs in the same worktree.
+- Opens a local card's changes for review and sends inline feedback to its existing agent conversation. Successful turns move the card to Review; Done stays manual.
 - Separates each new card's destination from its executor: Patchdeck can own it locally, or Hermes can own it on a named board with a Hermes profile or dispatcher assignment.
 - Navigates the Local Board, every named Hermes board, a repository-scoped projection, and a federated All Work projection without copying source records.
 - Sends a local card to Hermes only through an explicit handoff that preserves the local card and its conversation.
@@ -42,6 +45,8 @@ The MVP targets macOS. It is built with Tauri 2, React, TypeScript, and Rust.
 
 Git inspection remains read-only. Its Rust commands invoke Git directly without a shell, disable optional locks, lazy fetching, external diffs, text-conversion helpers, and pathspec magic, and use only allowlisted read operations. A separate editor command can replace an explicitly selected working-tree file, but it cannot update the index, move refs, switch branches, or contact Git remotes.
 
+Workspace creation is a separate write command. It creates a local branch and worktree under the app data directory, or attaches an existing worktree explicitly. Checkout disables Git hooks and configured content filters. Existing uncommitted changes are not copied; generated worktrees remain on disk until you remove them with Git.
+
 Hermes is isolated behind a separate Rust-owned adapter:
 
 - managed mode binds only to `127.0.0.1`, generates a session token in memory, and stops only the child process this app owns;
@@ -52,7 +57,9 @@ Hermes is isolated behind a separate Rust-owned adapter:
 - task creation, state changes, and comments are explicit user actions;
 - no Git commit, push, pull request, or remote publication happens automatically.
 
-Local agent runs are launched by a narrow Rust runtime adapter. Codex uses App Server's structured stdio protocol; Claude Code uses its noninteractive streaming JSON interface. Both inherit their CLI's existing sign-in, are fixed to the selected repository, use the execution profile's read-only or workspace-write policy, and never commit or publish automatically. Credentials and raw provider protocol events are not exposed to React.
+Local agent runs are launched by a narrow Rust runtime adapter. Codex uses App Server's structured stdio protocol; Claude Code uses its noninteractive streaming JSON interface. Both inherit their CLI's existing sign-in, are fixed to the run's recorded worktree, use the execution profile's read-only or workspace-write policy, and never commit or publish automatically. Credentials and raw provider protocol events are not exposed to React.
+
+The [agent review loop](docs/flows/agent-review-loop.md) records the implementation, checks, and current limits.
 
 ## Theming
 

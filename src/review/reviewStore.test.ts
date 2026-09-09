@@ -263,3 +263,17 @@ function lastSavedContent(): string {
   if (!call) throw new Error("save_review_store was never invoked");
   return (call[1] as { content: string }).content;
 }
+
+it("prunes oversized fingerprint history while keeping unsent comments and a usable mirror", async () => {
+  const modules = await loadReviewModules();
+  modules.writeInlineComments([comment]);
+  const paths = Object.fromEntries(Array.from({ length: 5_000 }, (_, index) => [`src/${"x".repeat(160)}/${index}.ts`, "f".repeat(64)]));
+  modules.writeStoredReviewedFingerprints(Object.fromEntries(Array.from({ length: 8 }, (_, index) => [`context-${index}`, paths])));
+  await modules.flushReviewStore();
+  const save = invoke.mock.calls.filter(([command]) => command === "save_review_store").slice(-1)[0]!;
+  expect(new TextEncoder().encode(save[1].content).length).toBeLessThan(4_500_000);
+  expect(JSON.parse(save[1].content).inlineComments).toHaveLength(1);
+  expect(Object.keys(modules.readStoredReviewedFingerprints()).length).toBeLessThan(8);
+  expect(JSON.parse(localStorage.getItem(mirrorKey)!)).toEqual(JSON.parse(save[1].content));
+  expect(modules.readReviewStorePersistenceError()).toBeNull();
+});

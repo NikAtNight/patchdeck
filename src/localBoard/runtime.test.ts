@@ -37,8 +37,10 @@ describe("local agent runtime routing", () => {
     const runtime = await import("./runtime");
     await store.initLocalBoardStore();
     const card = store.createLocalCard({ repositoryPath: "/work/product", title: "Repair CI" });
+    store.patchLocalCard(card.id, { workspace: { repositoryPath: "/work/product", worktreePath: "/worktrees/repair", branch: "work/repair", baseBranch: "main" } });
+    const boundCard = store.getLocalBoardDocument().cards[0];
 
-    await runtime.launchLocalCard(card, profile);
+    await runtime.launchLocalCard(boundCard, profile);
     const run = store.latestRunForCard(card.id)!;
 
     expect(run).toMatchObject({
@@ -52,10 +54,11 @@ describe("local agent runtime routing", () => {
       runtimeId: "claude",
       sessionId: null,
       instructions: "Keep changes focused.",
+      repositoryPath: "/worktrees/repair",
     }));
 
-    await runtime.continueLocalRun(run, "/work/product", "Continue");
-    expect(mocks.start).toHaveBeenLastCalledWith(expect.objectContaining({ sessionId: "session-1" }));
+    await runtime.continueLocalRun(run, "/different/path", "Continue");
+    expect(mocks.start).toHaveBeenLastCalledWith(expect.objectContaining({ sessionId: "session-1", repositoryPath: "/worktrees/repair" }));
   });
 
   it("applies only normalized events owned by the run runtime", async () => {
@@ -78,6 +81,18 @@ describe("local agent runtime routing", () => {
         expect.objectContaining({ role: "activity", body: "Ran tests" }),
       ],
     });
+    expect(store.getLocalBoardDocument().cards[0].lane).toBe("review");
+  });
+
+  it("keeps failed and cancelled work out of Done", async () => {
+    const store = await import("./store");
+    const runtime = await import("./runtime");
+    await store.initLocalBoardStore();
+    const card = store.createLocalCard({ repositoryPath: "/work/product", title: "Fail safely", lane: "in_progress" });
+    const failed = store.createLocalRun(card.id, "Fail safely", profile, "/worktrees/fail", "main");
+    runtime.applyAgentRuntimeEvent({ runtimeId: "claude", runId: failed.id, type: "completed", status: "failed", message: "Tests failed" });
+    expect(store.getLocalBoardDocument().cards[0].lane).toBe("in_progress");
+    expect(store.latestRunForCard(card.id)).toMatchObject({ status: "failed", error: "Tests failed" });
   });
 
   it("keeps a stopped run cancelled when its pending start later rejects", async () => {
@@ -87,8 +102,10 @@ describe("local agent runtime routing", () => {
     const runtime = await import("./runtime");
     await store.initLocalBoardStore();
     const card = store.createLocalCard({ repositoryPath: "/work/product", title: "Cancel startup" });
+    store.patchLocalCard(card.id, { workspace: { repositoryPath: "/work/product", worktreePath: "/worktrees/cancel", branch: "work/cancel", baseBranch: "main" } });
+    const boundCard = store.getLocalBoardDocument().cards[0];
 
-    const launch = runtime.launchLocalCard(card, profile);
+    const launch = runtime.launchLocalCard(boundCard, profile);
     const run = store.latestRunForCard(card.id)!;
     await runtime.stopLocalRun(run);
 

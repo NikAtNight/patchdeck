@@ -236,8 +236,15 @@ pub struct AgentRuntimeState {
 #[derive(Default)]
 struct RuntimeRegistry {
     active: HashMap<RunKey, ActiveRun>,
-    starting: HashMap<RunKey, Option<RunControl>>,
+    starting: HashMap<RunKey, StartingRun>,
+    writable_workspaces: HashMap<PathBuf, RunKey>,
     disconnecting: HashSet<RuntimeId>,
+}
+
+#[derive(Default)]
+struct StartingRun {
+    control: Option<RunControl>,
+    cancelled: bool,
 }
 
 #[derive(Default)]
@@ -333,7 +340,11 @@ pub fn start(
     };
     let reservation_key = key.clone();
     let runtime_id = request.runtime_id;
-    reserve_start(state, reservation_key.clone())?;
+    reserve_start(
+        state,
+        reservation_key.clone(),
+        (request.sandbox == AgentSandbox::WorkspaceWrite).then(|| repository.clone()),
+    )?;
     let result = match resolve_binary(&app, runtime_id) {
         Ok(binary) => match runtime_id {
             RuntimeId::Codex => start_codex(app, state, key, binary, repository, request),
@@ -371,8 +382,9 @@ pub fn stop(state: &AgentRuntimeState, runtime_id: RuntimeId, run_id: &str) -> R
                 cancelled: run.cancelled.clone(),
                 control: run.control.clone(),
             }
-        } else if let Some(control) = registry.starting.remove(&key) {
-            StopTarget::Starting(control)
+        } else if let Some(starting) = registry.starting.get_mut(&key) {
+            starting.cancelled = true;
+            StopTarget::Starting(starting.control.take())
         } else {
             return Err(format!(
                 "This run does not have an active {} turn.",
@@ -1528,7 +1540,11 @@ fn resolve_binary(app: &tauri::AppHandle, runtime_id: RuntimeId) -> Result<PathB
     ))
 }
 
-fn reserve_start(state: &AgentRuntimeState, key: RunKey) -> Result<(), String> {
+fn reserve_start(
+    state: &AgentRuntimeState,
+    key: RunKey,
+    writable_workspace: Option<PathBuf>,
+) -> Result<(), String> {
     let mut registry = state
         .registry
         .lock()
@@ -1545,13 +1561,27 @@ fn reserve_start(state: &AgentRuntimeState, key: RunKey) -> Result<(), String> {
             key.runtime_id.label()
         ));
     }
-    registry.starting.insert(key, None);
+    if let Some(workspace) = writable_workspace.as_ref() {
+        if let Some(owner) = registry.writable_workspaces.get(workspace) {
+            return Err(format!(
+                "Another writable agent run is already using this workspace: {} run `{}`. Stop it before starting this run.",
+                owner.runtime_id.label(), owner.run_id
+            ));
+        }
+    }
+    registry
+        .starting
+        .insert(key.clone(), StartingRun::default());
+    if let Some(workspace) = writable_workspace {
+        registry.writable_workspaces.insert(workspace, key);
+    }
     Ok(())
 }
 
 fn release_start(state: &AgentRuntimeState, key: &RunKey) {
     if let Ok(mut registry) = state.registry.lock() {
         registry.starting.remove(key);
+        release_workspace_reservation(&mut registry, key);
     }
 }
 
@@ -1564,14 +1594,17 @@ fn attach_starting_control(
         .registry
         .lock()
         .map_err(|_| "Agent runtime state is unavailable".to_string())?;
-    let slot = registry
+    let starting = registry
         .starting
         .get_mut(key)
         .ok_or_else(|| "This agent run was cancelled while it was starting.".to_string())?;
-    if slot.is_some() {
+    if starting.cancelled {
+        return Err("This agent run was cancelled while it was starting.".to_string());
+    }
+    if starting.control.is_some() {
         return Err("This agent run already has a starting process.".to_string());
     }
-    *slot = Some(control);
+    starting.control = Some(control);
     Ok(())
 }
 
@@ -1580,9 +1613,13 @@ fn insert_active(state: &AgentRuntimeState, key: RunKey, run: ActiveRun) -> Resu
         .registry
         .lock()
         .map_err(|_| "Agent runtime state is unavailable".to_string())?;
-    if registry.active.contains_key(&key) || registry.starting.remove(&key).is_none() {
+    let Some(starting) = registry.starting.get(&key) else {
+        return Err("This agent run changed state while it was starting.".to_string());
+    };
+    if registry.active.contains_key(&key) || starting.cancelled {
         return Err("This agent run changed state while it was starting.".to_string());
     }
+    registry.starting.remove(&key);
     registry.active.insert(key, run);
     Ok(())
 }
@@ -1590,7 +1627,12 @@ fn insert_active(state: &AgentRuntimeState, key: RunKey, run: ActiveRun) -> Resu
 fn remove_active(app: &tauri::AppHandle, key: &RunKey) {
     if let Ok(mut registry) = app.state::<AgentRuntimeState>().registry.lock() {
         registry.active.remove(key);
+        release_workspace_reservation(&mut registry, key);
     }
+}
+
+fn release_workspace_reservation(registry: &mut RuntimeRegistry, key: &RunKey) {
+    registry.writable_workspaces.retain(|_, owner| owner != key);
 }
 
 #[cfg(test)]
@@ -1661,10 +1703,11 @@ impl Drop for AgentRuntimeState {
 
 fn drain_registry(registry: &mut RuntimeRegistry) -> Vec<RunControl> {
     registry.disconnecting.clear();
+    registry.writable_workspaces.clear();
     let mut controls = registry
         .starting
         .drain()
-        .filter_map(|(_, control)| control)
+        .filter_map(|(_, starting)| starting.control)
         .collect::<Vec<_>>();
     controls.extend(registry.active.drain().map(|(_, run)| {
         run.cancelled.store(true, Ordering::SeqCst);
@@ -2126,18 +2169,62 @@ mod tests {
             runtime_id: RuntimeId::Claude,
             run_id: "run-starting".to_string(),
         };
-        assert!(reserve_start(&state, key.clone()).is_ok());
-        assert!(reserve_start(&state, key.clone()).is_err());
+        assert!(reserve_start(&state, key.clone(), None).is_ok());
+        assert!(reserve_start(&state, key.clone(), None).is_err());
         assert!(has_active_run(&state, RuntimeId::Claude).unwrap());
 
         release_start(&state, &key);
         assert!(!has_active_run(&state, RuntimeId::Claude).unwrap());
 
         assert!(reserve_disconnect(&state, RuntimeId::Claude).is_ok());
-        assert!(reserve_start(&state, key.clone()).is_err());
+        assert!(reserve_start(&state, key.clone(), None).is_err());
         release_disconnect(&state, RuntimeId::Claude);
-        assert!(reserve_start(&state, key.clone()).is_ok());
+        assert!(reserve_start(&state, key.clone(), None).is_ok());
         release_start(&state, &key);
+    }
+
+    #[test]
+    fn writable_workspace_reservations_are_scoped_by_canonical_path() {
+        let state = AgentRuntimeState::default();
+        let first = RunKey {
+            runtime_id: RuntimeId::Codex,
+            run_id: "write-one".to_string(),
+        };
+        let second = RunKey {
+            runtime_id: RuntimeId::Claude,
+            run_id: "write-two".to_string(),
+        };
+        let workspace = PathBuf::from("/tmp/patchdeck-workspace-one");
+        let other = PathBuf::from("/tmp/patchdeck-workspace-two");
+
+        reserve_start(&state, first.clone(), Some(workspace.clone())).unwrap();
+        assert!(
+            reserve_start(&state, second.clone(), Some(workspace.clone()))
+                .unwrap_err()
+                .contains("Another writable agent run")
+        );
+        assert!(reserve_start(&state, second.clone(), Some(other)).is_ok());
+        release_start(&state, &first);
+        release_start(&state, &second);
+        assert!(reserve_start(&state, second.clone(), Some(workspace)).is_ok());
+        release_start(&state, &second);
+    }
+
+    #[test]
+    fn readonly_runs_do_not_reserve_a_workspace() {
+        let state = AgentRuntimeState::default();
+        let first = RunKey {
+            runtime_id: RuntimeId::Codex,
+            run_id: "read-one".to_string(),
+        };
+        let second = RunKey {
+            runtime_id: RuntimeId::Claude,
+            run_id: "read-two".to_string(),
+        };
+        reserve_start(&state, first.clone(), None).unwrap();
+        reserve_start(&state, second.clone(), None).unwrap();
+        release_start(&state, &first);
+        release_start(&state, &second);
     }
 
     #[cfg(unix)]
@@ -2148,6 +2235,11 @@ mod tests {
             runtime_id: RuntimeId::Claude,
             run_id: "run-starting-stop".to_string(),
         };
+        let workspace = PathBuf::from("/tmp/patchdeck-starting-stop-workspace");
+        let competing_key = RunKey {
+            runtime_id: RuntimeId::Codex,
+            run_id: "run-starting-competitor".to_string(),
+        };
         let child = Command::new("sh")
             .args(["-c", "sleep 30"])
             .stdin(Stdio::null())
@@ -2156,7 +2248,7 @@ mod tests {
             .spawn()
             .unwrap();
         let process = Arc::new(Mutex::new(child));
-        reserve_start(&state, key.clone()).unwrap();
+        reserve_start(&state, key.clone(), Some(workspace.clone())).unwrap();
         attach_starting_control(
             &state,
             &key,
@@ -2175,13 +2267,19 @@ mod tests {
             "starting run should be stoppable: {result:?}"
         );
         assert!(!still_running, "starting provider process survived stop");
+        assert!(has_active_run(&state, RuntimeId::Claude).unwrap());
+        assert!(reserve_start(&state, key.clone(), None).is_err());
+        assert!(reserve_start(&state, competing_key.clone(), Some(workspace.clone())).is_err());
+        release_start(&state, &key);
         assert!(!has_active_run(&state, RuntimeId::Claude).unwrap());
+        reserve_start(&state, competing_key.clone(), Some(workspace)).unwrap();
+        release_start(&state, &competing_key);
 
         let reserved_key = RunKey {
             runtime_id: RuntimeId::Claude,
             run_id: "run-reserved-stop".to_string(),
         };
-        reserve_start(&state, reserved_key.clone()).unwrap();
+        reserve_start(&state, reserved_key.clone(), None).unwrap();
         assert!(stop(&state, RuntimeId::Claude, &reserved_key.run_id).is_ok());
         assert!(attach_starting_control(
             &state,
@@ -2191,6 +2289,7 @@ mod tests {
             },
         )
         .is_err());
+        release_start(&state, &reserved_key);
     }
 
     #[cfg(unix)]

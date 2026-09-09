@@ -28,3 +28,7 @@ export function loadWorkingTreeFileDiff(request: Omit<FileDiffRequest, "compareC
 export function listCommits(repositoryPath: string, mergeBase: string, compareCommit: string) {
   return invoke<CommitInfo[]>("list_commits", { repositoryPath, mergeBase, compareCommit });
 }
+
+export function compareWorkingTree(repositoryPath: string, baseBranch: string) {
+  return invoke<Comparison>("compare_working_tree", { repositoryPath, baseBranch });
+}

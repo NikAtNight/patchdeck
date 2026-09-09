@@ -7,8 +7,10 @@ import { listAgentRuntimes } from "../providers/api";
 import { executionProfileForRepository, useExecutionProfiles } from "../providers/profiles";
 import type { ExecutionProfile } from "../providers/profiles";
 import type { AgentRuntimeStatus } from "../providers/types";
+import { openRepository } from "../api";
+import { createCardWorktree } from "../providers/workspaces";
 import { launchLocalCard } from "./runtime";
-import { createLocalCard } from "./store";
+import { createLocalCard, deleteLocalCard, patchLocalCard } from "./store";
 import type { LocalCard, LocalLane } from "./types";
 
 export type NewWorkResult =
@@ -41,6 +43,7 @@ export function NewWorkComposer({
   const dialogRef = useRef<HTMLFormElement>(null);
   const titleRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null);
   const taskRequest = useRef(0);
+  const submitting = useRef(false);
   const onCloseRef = useRef(onClose);
   const returnFocusRef = useRef<HTMLElement | null>(
     typeof document !== "undefined" && document.activeElement instanceof HTMLElement
@@ -162,7 +165,8 @@ export function NewWorkComposer({
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!canSubmit) return;
+    if (!canSubmit || submitting.current) return;
+    submitting.current = true;
     setSaving(true);
     setError(null);
     try {
@@ -174,7 +178,18 @@ export function NewWorkComposer({
           lane,
           executionProfileId: selectedExecutionProfile?.id ?? null,
         });
-        if (selectedExecutionProfile) await launchLocalCard(card, selectedExecutionProfile);
+        try {
+          if (selectedExecutionProfile) {
+            const info = await openRepository(repositoryPath);
+            const baseBranch = info.suggestedBaseBranch ?? "main";
+            const workspace = await createCardWorktree({ repositoryPath, cardId: card.id, baseBranch });
+            patchLocalCard(card.id, { workspace });
+            await launchLocalCard({ ...card, workspace }, selectedExecutionProfile);
+          }
+        } catch (reason) {
+          deleteLocalCard(card.id);
+          throw reason;
+        }
         onCreated({ source: "local", card });
         return;
       }
@@ -199,6 +214,7 @@ export function NewWorkComposer({
     } catch (reason) {
       setError(errorMessage(reason));
     } finally {
+      submitting.current = false;
       setSaving(false);
     }
   }

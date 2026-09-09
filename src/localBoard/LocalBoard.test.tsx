@@ -3,7 +3,7 @@ import "@testing-library/jest-dom/vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LocalBoard } from "./LocalBoard";
 import { resetExecutionProfiles } from "../providers/profiles";
-import { createLocalCard, resetLocalBoardStore } from "./store";
+import { createLocalCard, patchLocalCard, resetLocalBoardStore } from "./store";
 import type { AgentRuntimeEvent } from "../providers/types";
 import { applyAgentRuntimeEvent } from "./runtime";
 
@@ -26,7 +26,12 @@ describe("local board", () => {
     localStorage.clear();
     resetLocalBoardStore();
     resetExecutionProfiles();
-    mocks.invoke.mockReset().mockResolvedValue(null);
+    mocks.invoke.mockReset().mockImplementation((command: string, args?: Record<string, unknown>) => {
+      if (command === "open_repository") return Promise.resolve({ branches: [{ name: "main", commit: "abc" }], currentBranch: "main", suggestedBaseBranch: "main", path: "/work/product", name: "product" });
+      if (command === "create_card_worktree") return Promise.resolve({ repositoryPath: "/work/product", worktreePath: "/worktrees/card", branch: "work/card", baseBranch: "main", ...args });
+      if (command === "list_card_worktrees") return Promise.resolve([]);
+      return Promise.resolve(null);
+    });
     mocks.list.mockReset().mockResolvedValue([
       { id: "codex", label: "Codex", installed: true, authenticated: true, ready: true, version: "codex-cli 0.147.0", path: "/usr/local/bin/codex", authMode: "ChatGPT", accountLabel: null, error: null },
       { id: "claude", label: "Claude Code", installed: true, authenticated: true, ready: true, version: "2.0.0", path: "/usr/local/bin/claude", authMode: "Claude", accountLabel: null, error: null },
@@ -49,7 +54,7 @@ describe("local board", () => {
 
     await waitFor(() => expect(mocks.start).toHaveBeenCalledWith(expect.objectContaining({
       runtimeId: "codex",
-      repositoryPath: "/work/product",
+      repositoryPath: "/worktrees/card",
       prompt: "Repair CI\n\nRun focused tests.",
       sessionId: null,
     })));
@@ -99,5 +104,44 @@ describe("local board", () => {
     rerender(<LocalBoard repositoryPath="/work/other" />);
 
     expect(screen.queryByRole("complementary", { name: "Product-only work card details" })).not.toBeInTheDocument();
+  });
+
+  it("opens review for the bound worktree and base branch", async () => {
+    const onReviewTask = vi.fn();
+    const card = createLocalCard({ repositoryPath: "/work/product", title: "Review me", lane: "review" });
+    patchLocalCard(card.id, { workspace: { repositoryPath: "/work/product", worktreePath: "/worktrees/review", branch: "work/review", baseBranch: "main" } });
+    render(<LocalBoard repositoryPath="/work/product" onReviewTask={onReviewTask} />);
+    await screen.findByText("2 agents ready");
+    fireEvent.click(screen.getByText("Review me"));
+    fireEvent.click(screen.getByRole("button", { name: "Review changes" }));
+
+    expect(onReviewTask).toHaveBeenCalledWith(expect.objectContaining({
+      source: "local",
+      board: "local",
+      taskId: card.id,
+      repositoryPath: "/worktrees/review",
+      baseBranch: "main",
+    }));
+  });
+
+  it("requires an explicit workspace binding and runs in the attached worktree", async () => {
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "open_repository") return Promise.resolve({ branches: [{ name: "main", commit: "abc" }], currentBranch: "main", suggestedBaseBranch: "main", path: "/work/product", name: "product" });
+      if (command === "list_card_worktrees") return Promise.resolve([{ path: "/worktrees/existing", branch: "work/existing" }]);
+      if (command === "attach_card_worktree") return Promise.resolve({ repositoryPath: "/work/product", worktreePath: "/worktrees/existing", branch: "work/existing", baseBranch: "main" });
+      return Promise.resolve(null);
+    });
+    createLocalCard({ repositoryPath: "/work/product", title: "Attach first" });
+    render(<LocalBoard repositoryPath="/work/product" />);
+    await screen.findByText("2 agents ready");
+    fireEvent.click(screen.getByText("Attach first"));
+    const runButton = screen.getByRole("button", { name: "Run with Codex" });
+    expect(runButton).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Workspace policy"), { target: { value: "attach" } });
+    await waitFor(() => expect(screen.getByLabelText("Worktree")).toHaveValue("/worktrees/existing"));
+    fireEvent.click(screen.getByRole("button", { name: "Attach workspace" }));
+    await waitFor(() => expect(runButton).toBeEnabled());
+    fireEvent.click(runButton);
+    await waitFor(() => expect(mocks.start).toHaveBeenCalledWith(expect.objectContaining({ repositoryPath: "/worktrees/existing" })));
   });
 });
