@@ -1,6 +1,6 @@
 [package]
 name = "patchdeck"
-version = "0.6.0"
+version = "0.6.1"
 description = "A local Git review and Hermes Agent workbench"
 authors = ["Patchdeck contributors"]
 edition = "2021"

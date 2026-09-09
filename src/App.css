@@ -232,8 +232,7 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-lineca
 .safety-grid article p { margin: 5px 0 0; color: var(--muted); font-size: var(--text-sm); line-height: 1.6; }
 .about-heading { display: flex; align-items: center; gap: 17px; }
 .about-heading > div:last-child { min-width: 0; }
-.about-mark { width: 58px; height: 58px; display: grid; place-items: center; flex: 0 0 auto; border: 1px solid var(--accent-border); border-radius: 15px; background: var(--accent-soft); color: var(--accent-bright); }
-.about-mark svg { width: 27px; height: 27px; }
+.about-mark { width: 58px; height: 58px; flex: 0 0 auto; }
 .about-details { overflow: hidden; margin: 0; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); }
 .about-details > div { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 14px; padding: 12px 14px; border-bottom: 1px solid var(--border); font-size: var(--text-sm); }
 .about-details > div:last-child { border-bottom: 0; }
@@ -674,8 +673,8 @@ button:disabled { cursor: default; opacity: 0.55; transform: none !important; }
 .welcome-scroll { min-height: 0; flex: 1; display: flex; flex-direction: column; overflow-y: auto; overscroll-behavior: contain; }
 .welcome { width: min(860px, calc(100% - 64px)); display: grid; grid-template-columns: 300px minmax(0, 1fr); align-items: center; gap: 36px; margin: auto; padding: 40px 0 24px; }
 .welcome-intro { padding: 20px 12px; text-align: center; }
-.welcome-mark { width: 72px; height: 72px; display: grid; place-items: center; margin: 0 auto 23px; border: 1px solid var(--accent-border); border-radius: 20px; background: linear-gradient(145deg, var(--accent-soft), var(--chrome)); color: var(--accent-bright); box-shadow: var(--shadow-control); }
-.welcome-mark svg { width: 36px; height: 36px; }
+.welcome-mark { width: 72px; height: 72px; margin: 0 auto 23px; }
+.welcome-mark img, .about-mark img { display: block; width: 100%; height: 100%; }
 .eyebrow { margin: 0 0 13px; color: var(--accent-bright); font-size: var(--label-micro); font-weight: 700; letter-spacing: 0.19em; }
 .welcome h1 { margin: 0; color: var(--text); font-size: var(--text-display-sm); font-weight: 700; line-height: 1.15; letter-spacing: -0.035em; }
 .welcome-copy { margin: 13px auto 24px; color: var(--muted); font-size: var(--text-md); line-height: 1.6; }

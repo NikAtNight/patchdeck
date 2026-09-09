@@ -1,4 +1,5 @@
-import { BranchIcon, ChevronIcon, FolderIcon, LockIcon, RepositoryIcon, WorkspaceIcon } from "./icons";
+import appIcon from "../../app-icon.svg";
+import { ChevronIcon, FolderIcon, LockIcon, RepositoryIcon, WorkspaceIcon } from "./icons";
 import { ErrorBanner } from "./ui";
 
 export function WelcomeScreen({
@@ -20,7 +21,7 @@ export function WelcomeScreen({
     <div className="welcome-scroll">
       <main className="welcome">
         <section className="welcome-intro" aria-labelledby="welcome-heading">
-          <div className="welcome-mark" aria-hidden="true"><BranchIcon /></div>
+          <div className="welcome-mark" aria-hidden="true"><img src={appIcon} alt="" /></div>
           <h1 id="welcome-heading">Welcome to Patchdeck</h1>
           <p className="welcome-copy">Review branches.<br />Manage your agent tasks.</p>
           <div className="welcome-actions">

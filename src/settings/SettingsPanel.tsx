@@ -1,3 +1,4 @@
+import appIcon from "../../app-icon.svg";
 import { useEffect, useRef, useState } from "react";
 import type { HermesSessionController } from "../hermes/types";
 import { CloseIcon, InfoIcon, LockIcon, ProviderIcon, SlidersIcon } from "../components/icons";
@@ -288,7 +289,7 @@ function AboutSettings() {
   return (
     <div className="settings-page settings-copy-page">
       <header className="about-heading">
-        <div className="about-mark"><ProviderIcon /></div>
+        <div className="about-mark" aria-hidden="true"><img src={appIcon} alt="" /></div>
         <div>
           <span>{development ? "Development build" : "Release build"}</span>
           <h3>{productName}</h3>
