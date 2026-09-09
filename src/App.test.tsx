@@ -233,10 +233,9 @@ describe("Patchdeck", () => {
 
   it("starts with a local-only repository prompt", () => {
     render(<App />);
-    expect(screen.getByRole("heading", { name: /see the whole change/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /welcome to patchdeck/i })).toBeInTheDocument();
     expect(screen.queryByText("Branch Diff")).not.toBeInTheDocument();
     expect(screen.getByText(/nothing is published automatically/i)).toBeInTheDocument();
-    expect(screen.getByText(/local-first/i)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Connect Hermes" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Open a workspace" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Settings" })).toBeInTheDocument();
@@ -251,7 +250,7 @@ describe("Patchdeck", () => {
     expect(await within(dialog).findByRole("article", { name: "Codex" })).toBeInTheDocument();
 
     fireEvent.click(within(dialog).getByRole("button", { name: "About" }));
-    expect(within(dialog).getByRole("heading", { name: "Patchdeck (Dev)" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("heading", { name: "Patchdeck Local" })).toBeInTheDocument();
     expect(within(dialog).getByText("Development")).toBeInTheDocument();
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Close settings" }));
@@ -276,7 +275,7 @@ describe("Patchdeck", () => {
 
     render(<App />);
 
-    expect(screen.queryByRole("heading", { name: /see the whole change/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /welcome to patchdeck/i })).not.toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "other" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "example" })).toHaveAttribute("aria-selected", "true");
     await waitFor(() => expect(mocks.openRepository).toHaveBeenCalledWith(repository.path));
@@ -599,7 +598,7 @@ describe("Patchdeck", () => {
     mocks.loadFileDiff.mockResolvedValue(fileDiff);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
 
     expect(await screen.findByText("files changed")).toBeInTheDocument();
     expect(screen.queryByText("Branch Diff")).not.toBeInTheDocument();
@@ -634,7 +633,7 @@ describe("Patchdeck", () => {
     ]);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
     await screen.findByText("const answer = 42;");
 
     expect(screen.getByRole("tab", { name: "Commits (2)" })).toBeInTheDocument();
@@ -683,7 +682,7 @@ describe("Patchdeck", () => {
     });
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
     await screen.findByText("const answer = 42;");
     fireEvent.click(screen.getByRole("button", { name: "Edit" }));
     const editor = await screen.findByRole("textbox", { name: "File contents" });
@@ -707,7 +706,7 @@ describe("Patchdeck", () => {
     mocks.loadFileDiff.mockResolvedValue(fileDiff);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
     await screen.findByText("const answer = 42;");
 
     const diffView = screen.getByLabelText("File diff").querySelector(".diff-view");
@@ -727,7 +726,7 @@ describe("Patchdeck", () => {
     mocks.loadFileDiff.mockResolvedValue(fileDiff);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
     await screen.findByText("const answer = 42;");
 
     expect(document.querySelector(".token.keyword")).toHaveTextContent("const");
@@ -750,7 +749,7 @@ describe("Patchdeck", () => {
     mocks.loadFileDiff.mockResolvedValue(fileDiff);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
     await screen.findByText("const answer = 42;");
     const firstViewport = document.querySelector<HTMLElement>(".diff-scroll");
     if (!firstViewport) throw new Error("Expected a diff viewport");
@@ -772,7 +771,7 @@ describe("Patchdeck", () => {
     mocks.loadFileDiff.mockResolvedValue(fileDiff);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
     await screen.findByText("files changed");
     await screen.findByText("const answer = 42;");
     fireEvent.click(screen.getByRole("treeitem", { name: /assets\/logo\.png/ }));
@@ -788,7 +787,7 @@ describe("Patchdeck", () => {
     mocks.loadFileDiff.mockResolvedValue(fileDiff);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
 
     const srcFolder = await screen.findByRole("treeitem", { name: "src, 1 changed file" });
     expect(screen.getByRole("treeitem", { name: /src\/example\.ts/ })).toBeVisible();
@@ -806,7 +805,7 @@ describe("Patchdeck", () => {
     mocks.loadFileDiff.mockResolvedValue(fileDiff);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
     const srcFolder = await screen.findByRole("treeitem", { name: "src, 1 changed file" });
     fireEvent.click(srcFolder);
     fireEvent.click(screen.getByRole("button", { name: "Refresh comparison" }));
@@ -846,7 +845,7 @@ describe("Patchdeck", () => {
     mocks.loadFileDiff.mockResolvedValue(fileDiff);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
     await screen.findByRole("treeitem", { name: /assets\/logo\.png/ });
     fireEvent.click(screen.getByRole("treeitem", { name: /assets\/logo\.png/ }));
     expect(await screen.findByRole("heading", { name: "Binary file" })).toBeInTheDocument();
@@ -869,7 +868,7 @@ describe("Patchdeck", () => {
     mocks.loadFileDiff.mockResolvedValue(fileDiff);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
     await screen.findByRole("tab", { name: "example" });
     fireEvent.click(screen.getByRole("button", { name: "Open another project" }));
 
@@ -890,7 +889,7 @@ describe("Patchdeck", () => {
     mocks.loadFileDiff.mockResolvedValue(fileDiff);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
     await screen.findByRole("tab", { name: "example" });
     fireEvent.click(screen.getByRole("button", { name: "Open another project" }));
     fireEvent.click(screen.getByRole("button", { name: "Close example" }));
@@ -907,7 +906,7 @@ describe("Patchdeck", () => {
     mocks.loadFileDiff.mockResolvedValue(fileDiff);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
     await screen.findByRole("tab", { name: "example" });
     fireEvent.click(screen.getByRole("button", { name: "Close example" }));
 
@@ -925,7 +924,7 @@ describe("Patchdeck", () => {
     });
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
 
     expect(await screen.findByRole("heading", { name: /nothing to compare yet/i })).toBeInTheDocument();
     expect(screen.getByText("No local branches")).toBeInTheDocument();
@@ -941,7 +940,7 @@ describe("Patchdeck", () => {
       .mockResolvedValue(fileDiff);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
 
     expect(await screen.findByRole("heading", { name: "Could not load this diff" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
@@ -955,7 +954,7 @@ describe("Patchdeck", () => {
     mocks.compareBranches.mockRejectedValue(new Error("Branches have no common ancestor"));
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("no common ancestor");
     expect(screen.queryByText("No changed files")).not.toBeInTheDocument();
@@ -976,7 +975,7 @@ describe("Patchdeck", () => {
     mocks.loadFileDiff.mockResolvedValue(fileDiff);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
     await screen.findByText("files changed");
     fireEvent.click(screen.getByRole("button", { name: "Refresh comparison" }));
 
@@ -1031,7 +1030,7 @@ describe("Patchdeck", () => {
     mocks.loadFileDiff.mockResolvedValue(fileDiff);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
     expect(await screen.findByText("Comparing branches…")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Open another project" }));
 
@@ -1041,6 +1040,54 @@ describe("Patchdeck", () => {
     expect(within(screen.getByRole("tabpanel")).getByText("No local branches")).toBeInTheDocument();
   });
 
+  it("keeps Settings isolated from review keyboard shortcuts", async () => {
+    mocks.dialogOpen.mockResolvedValue(repository.path);
+    mocks.openRepository.mockResolvedValue(repository);
+    mocks.compareBranches.mockResolvedValue(comparison);
+    mocks.loadFileDiff.mockResolvedValue(fileDiff);
+
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
+    const assetFile = await screen.findByRole("treeitem", { name: /assets\/logo\.png/ });
+    fireEvent.click(assetFile);
+    const filter = screen.getByRole("textbox", { name: "Filter files" });
+    const settingsButton = screen.getByRole("button", { name: "Settings" });
+    settingsButton.focus();
+    fireEvent.click(settingsButton);
+    const dialog = screen.getByRole("dialog", { name: "Settings" });
+    const close = within(dialog).getByRole("button", { name: "Close settings" });
+    expect(close).toHaveFocus();
+
+    fireEvent.keyDown(close, { key: "f", metaKey: true });
+    expect(close).toHaveFocus();
+    expect(filter).not.toHaveFocus();
+    fireEvent.keyDown(close, { key: "j" });
+    fireEvent.keyDown(close, { key: "v" });
+    expect(assetFile).toHaveAttribute("aria-selected", "true");
+    expect(assetFile).not.toHaveClass("viewed");
+    expect(settingsButton.closest(".app-shell")).toHaveAttribute("inert");
+
+    fireEvent.keyDown(close, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Settings" })).not.toBeInTheDocument();
+    expect(settingsButton).toHaveFocus();
+    fireEvent.keyDown(settingsButton, { key: "f", metaKey: true });
+    expect(filter).toHaveFocus();
+  });
+
+  it("opens Settings and repositories with standard Mac shortcuts", async () => {
+    mocks.dialogOpen.mockResolvedValue(null);
+    render(<App />);
+    fireEvent.keyDown(window, { key: ",", metaKey: true });
+    const dialog = screen.getByRole("dialog", { name: "Settings" });
+    fireEvent.keyDown(window, { key: "o", metaKey: true });
+    expect(mocks.dialogOpen).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close settings" }));
+    fireEvent.keyDown(window, { key: "o", metaKey: true });
+    await waitFor(() => expect(mocks.dialogOpen).toHaveBeenCalledWith({
+      directory: true, multiple: false, title: "Open Git repository",
+    }));
+  });
+
   it("moves the selected file with j and k", async () => {
     mocks.dialogOpen.mockResolvedValue(repository.path);
     mocks.openRepository.mockResolvedValue(repository);
@@ -1048,7 +1095,7 @@ describe("Patchdeck", () => {
     mocks.loadFileDiff.mockResolvedValue(fileDiff);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
     await screen.findByText("const answer = 42;");
     fireEvent.click(screen.getByRole("treeitem", { name: /assets\/logo\.png/ }));
 
@@ -1066,7 +1113,7 @@ describe("Patchdeck", () => {
     mocks.loadFileDiff.mockResolvedValue(fileDiff);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
     const assetFile = await screen.findByRole("treeitem", { name: /assets\/logo\.png/ });
     fireEvent.click(assetFile);
 
@@ -1082,7 +1129,7 @@ describe("Patchdeck", () => {
     mocks.loadFileDiff.mockResolvedValue(fileDiff);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
     const filter = await screen.findByRole("textbox", { name: "Filter files" });
 
     fireEvent.change(filter, { target: { value: "logo" } });
@@ -1111,7 +1158,7 @@ describe("Patchdeck", () => {
     mocks.loadFileDiff.mockResolvedValue(fileDiff);
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open a repository" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open repository" }));
     await screen.findByText("const answer = 42;");
 
     fireEvent.focus(window);

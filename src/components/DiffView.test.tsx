@@ -1,8 +1,11 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import type { ComponentProps } from "react";
 import "@testing-library/jest-dom/vitest";
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { DiffView } from "./DiffView";
 import type { InlineReviewComment, ReviewTarget } from "../review/inlineComments";
+
+afterEach(cleanup);
 
 const reviewTarget: ReviewTarget = {
   board: "product",
@@ -90,4 +93,60 @@ it("lets a reviewer address and reopen a durable inline comment", async () => {
   );
   fireEvent.click(screen.getByRole("button", { name: "Reopen comment" }));
   expect(onUpdateComment).toHaveBeenLastCalledWith("review-1", "open");
+});
+
+it("keeps addition and deletion markers separate from comment actions and preserves line anchors", () => {
+  const onAddComment = vi.fn();
+  const props: ComponentProps<typeof DiffView> = {
+    file: { path: "src/example.ts", oldPath: null, status: "modified", additions: 1, deletions: 1, binary: false },
+    diff: {
+      path: "src/example.ts", oldPath: null, binary: false, tooLarge: false,
+      hunks: [{ header: "@@ -1,2 +1,2 @@", lines: [
+        { kind: "context", oldLine: 1, newLine: 1, content: "const stable = true;" },
+        { kind: "deletion", oldLine: 2, newLine: null, content: "const answer = 41;" },
+        { kind: "addition", oldLine: null, newLine: 2, content: "const answer = 42;" },
+      ] }],
+    },
+    loading: false,
+    wrapLines: true,
+    onToggleWrap: vi.fn(),
+    onRetry: vi.fn(),
+    showEdit: false,
+    canEdit: false,
+    onEdit: vi.fn(),
+    reviewTarget,
+    comments: [],
+    onAddComment,
+    onUpdateComment: vi.fn(),
+    onSendFeedback: vi.fn(),
+    feedbackStatus: null,
+    onClearReviewTarget: vi.fn(),
+    viewed: false,
+    onToggleViewed: vi.fn(),
+  };
+  const { container, rerender } = render(<DiffView {...props} />);
+
+  for (const [kind, marker] of [["addition", "+"], ["deletion", "−"]]) {
+    const lineMarker = container.querySelector(`.diff-line.${kind} .line-marker`)!;
+    expect(lineMarker).toHaveTextContent(marker);
+    expect(lineMarker).toBeVisible();
+    expect(lineMarker.querySelector("button")).toBeNull();
+  }
+
+  for (const [side, line, context] of [
+    ["old", 2, "const answer = 41;"],
+    ["new", 2, "const answer = 42;"],
+    ["new", 1, "const stable = true;"],
+  ] as const) {
+    fireEvent.click(screen.getByRole("button", { name: `Comment on ${side} line ${line}` }));
+    const composer = screen.getByPlaceholderText(`Comment on src/example.ts:${line}`);
+    fireEvent.change(composer, { target: { value: `Review ${context}` } });
+    fireEvent.click(within(composer.closest("form")!).getByRole("button", { name: "Add comment" }));
+    expect(onAddComment).toHaveBeenLastCalledWith({ side, line, context }, `Review ${context}`);
+  }
+
+  rerender(<DiffView {...props} reviewTarget={null} />);
+  expect(screen.queryByRole("button", { name: /Comment on/ })).not.toBeInTheDocument();
+  expect(container.querySelector(".diff-line.addition .line-marker")).toHaveTextContent("+");
+  expect(container.querySelector(".diff-line.deletion .line-marker")).toHaveTextContent("−");
 });

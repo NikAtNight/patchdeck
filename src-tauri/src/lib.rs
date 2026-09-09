@@ -7,7 +7,7 @@ mod storage;
 mod workspace;
 
 use repository::{CommitInfo, Comparison, FileDiff, RepositoryInfo};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use workspace::WorkspaceProject;
 
 #[tauri::command]
@@ -423,9 +423,66 @@ pub fn run() {
         .manage(hermes::HermesState::default())
         .manage(agent_runtime::AgentRuntimeState::default())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::all()
+                        & !tauri_plugin_window_state::StateFlags::VISIBLE,
+                )
+                .build(),
+        )
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .setup(|app| {
+            use tauri::menu::{Menu, MenuItem};
+            let menu = Menu::default(app.handle())?;
+            for item in menu.items()? {
+                let Some(submenu) = item.as_submenu() else {
+                    continue;
+                };
+                if submenu.text()? == "File" {
+                    submenu.insert(
+                        &MenuItem::with_id(
+                            app,
+                            "open-repository",
+                            "Open Repository…",
+                            true,
+                            Some("CmdOrCtrl+O"),
+                        )?,
+                        0,
+                    )?;
+                    submenu.insert(
+                        &MenuItem::with_id(
+                            app,
+                            "open-workspace",
+                            "Open Workspace…",
+                            true,
+                            Some("CmdOrCtrl+Shift+O"),
+                        )?,
+                        1,
+                    )?;
+                } else if submenu.text()? == app.package_info().name {
+                    submenu.insert(
+                        &MenuItem::with_id(
+                            app,
+                            "settings",
+                            "Settings…",
+                            true,
+                            Some("CmdOrCtrl+,"),
+                        )?,
+                        2,
+                    )?;
+                }
+            }
+            app.set_menu(menu)?;
+            Ok(())
+        })
+        .on_menu_event(|app, event| {
+            let action = event.id().as_ref();
+            if matches!(action, "open-repository" | "open-workspace" | "settings") {
+                let _ = app.emit_to("main", "app-menu", action);
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             hermes_connect_managed,
             hermes_connect_discovered,

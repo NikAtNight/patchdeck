@@ -2,7 +2,7 @@ import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from "react";
 import type { AppSurface, ProjectTab } from "../session";
-import { CloseIcon, FolderIcon, PlusIcon, RepositoryIcon, SettingsIcon, WorkspaceIcon } from "./icons";
+import { CloseIcon, PlusIcon, RepositoryIcon, SettingsIcon, WorkspaceIcon } from "./icons";
 import { Spinner } from "./ui";
 
 export function WorkspaceHeader({
@@ -72,17 +72,9 @@ export function WorkspaceHeader({
           <button className={activeSurface === "agent" ? "active" : ""} aria-pressed={activeSurface === "agent"} onClick={() => onSurfaceChange("agent")}>Agent board</button>
         </nav>
       )}
-      {tabs.length === 0 && (
-        <div className="header-actions">
-          <button className="secondary-button header-open" onClick={onOpenRepository} disabled={opening}>
-            <FolderIcon /> Open repository
-          </button>
-          <button className="secondary-button" onClick={onOpenWorkspace} disabled={opening}>
-            <WorkspaceIcon /> Open workspace
-          </button>
-        </div>
-      )}
+      {tabs.length === 0 && <div className="header-app-name">Patchdeck</div>}
       <div className="header-tools">
+        {import.meta.env.MODE === "development" && <span className="local-build-badge">Local</span>}
         <button className="icon-button header-settings-button" onClick={onOpenSettings} aria-label="Settings" title="Settings">
           <SettingsIcon />
         </button>

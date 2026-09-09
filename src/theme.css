@@ -1,24 +1,4 @@
-/*
-  Design tokens for Patchdeck.
-
-  Every color, font family, and font size the interface uses is defined here.
-  Component styles in App.css must reference tokens, never raw values, so a
-  color scheme is one block in this file.
-
-  The default scheme follows macOS dark-mode conventions: neutral gray
-  surfaces (no color cast), the system blue accent, Apple's semantic colors
-  (systemGreen, systemRed, systemOrange, systemTeal), flat filled controls,
-  and an Xcode-dark-inspired syntax palette. Type sizes match macOS control
-  sizes: 13px body, 12px labels, 11px captions.
-
-  Adding a user-selectable scheme later:
-    1. Add a `:root[data-theme="<name>"]` block below that overrides any
-       subset of the color tokens (surfaces, text, accent, semantic, syntax).
-    2. Set `document.documentElement.dataset.theme = "<name>"` (and persist
-       the choice wherever settings live).
-  Nothing else has to change: components, diff colors, and syntax
-  highlighting (src/prismTheme.ts reads the --syntax-* tokens) all follow.
-*/
+/* Shared interface and syntax tokens. Appearance is resolved before React mounts. */
 
 :root {
   color-scheme: dark;
@@ -41,24 +21,24 @@
   --text-display-lg: clamp(34px, 5vw, 52px);
 
   /* Surfaces (neutral grays, macOS dark) */
-  --bg: #1a1a1c;
-  --surface-1: #202024;      /* panels, cards at rest */
-  --surface-2: #26262a;      /* raised controls, active tabs */
-  --surface-3: #2a2a2f;      /* popovers, dialogs, drawers */
-  --surface-hover: #2e2e33;
-  --inset: #141416;          /* input wells, code blocks, logs */
+  --bg: #1c1d20;
+  --surface-1: #242529;      /* panels, cards at rest */
+  --surface-2: #303135;      /* raised controls, active tabs */
+  --surface-3: #2b2d32;      /* popovers, dialogs, drawers */
+  --surface-hover: #393b40;
+  --inset: #191a1d;          /* input wells, code blocks, logs */
   --surface-hover-subtle: rgba(255, 255, 255, 0.025);
   --surface-hover-emphasis: rgba(255, 255, 255, 0.035);
 
   /* Borders */
-  --border: #333338;
-  --border-strong: #48484d;
+  --border: #3a3c42;
+  --border-strong: #50535b;
 
   /* Text (approximates macOS label opacities on dark) */
   --text: #e9e9eb;
   --text-secondary: #c9c9ce;
-  --muted: #98989f;
-  --faint: #707076;
+  --muted: #a8aab2;
+  --faint: #999ca6;
 
   /* Accent (macOS systemBlue, dark variant) */
   --accent: #0a84ff;
@@ -66,8 +46,8 @@
   --accent-soft: rgba(10, 132, 255, 0.14);
   --accent-border: rgba(10, 132, 255, 0.45);
   --accent-halo: rgba(10, 132, 255, 0.07);
-  --accent-fill: #0a84ff;        /* filled controls are flat per the HIG */
-  --accent-fill-hover: #2b93ff;
+  --accent-fill: #0870d8;        /* filled controls are flat per the HIG */
+  --accent-fill-hover: #1675d4;
   --accent-fill-border: #0a84ff;
   --accent-fill-text: #ffffff;
   --accent-glow: none;
@@ -93,19 +73,19 @@
   --diff-del-bg: rgba(255, 69, 58, 0.09);
   --diff-add-word-bg: rgba(48, 209, 88, 0.25);
   --diff-del-word-bg: rgba(255, 69, 58, 0.225);
-  --diff-add-line-number: #4fae6e;
-  --diff-del-line-number: #b06258;
+  --diff-add-line-number: #77c993;
+  --diff-del-line-number: #e79289;
 
   /* Syntax highlighting, Xcode-dark-inspired (consumed by src/prismTheme.ts) */
   --syntax-plain: #dfdfe0;
-  --syntax-comment: #7f8c98;
+  --syntax-comment: #9ba7b5;
   --syntax-keyword: #fc5fa3;
   --syntax-string: #fc6a5d;
   --syntax-number: #d0bf69;
-  --syntax-function: #41a1c0;
+  --syntax-function: #67c1dc;
   --syntax-tag: #5dd8ff;
   --syntax-attribute: #ffa14f;
-  --syntax-punctuation: #98989f;
+  --syntax-punctuation: #b5b7c0;
 
   /* Elevation and chrome */
   --shadow-overlay: 0 24px 80px rgba(0, 0, 0, 0.55);
@@ -119,13 +99,90 @@
   --scrollbar-thumb: #48484d;
   --scrollbar-thumb-hover: #5a5a60;
 
+  --chrome: rgba(42, 44, 49, 0.88);
+  --sidebar-material: rgba(38, 40, 45, 0.9);
+  --chrome-highlight: rgba(255, 255, 255, 0.065);
+  --welcome-wash: rgba(117, 155, 211, 0.08);
+  --shadow-control: 0 1px 3px rgba(0, 0, 0, 0.18), inset 0 1px var(--chrome-highlight);
+
   /* Layout */
-  --content-header-height: 56px;
-  --content-subheader-height: 35px;
+  --toolbar-height: 44px;
+  --content-header-height: 40px;
+  --content-subheader-height: 28px;
   --sidebar-width: clamp(260px, 24vw, 360px);
   --space-control-y: 6px;
   --space-control-x: 6px;
-  --traffic-light-inset: 92px; /* native control cluster plus 20px clearance */
+  --traffic-light-inset: 104px; /* native control cluster with toolbar clearance */
+}
+
+:root[data-appearance="light"] {
+  color-scheme: light;
+  --bg: #f5f5f7;
+  --surface-1: #ffffff;
+  --surface-2: #f0f0f3;
+  --surface-3: #ffffff;
+  --surface-hover: #e6e7ec;
+  --inset: #fafafb;
+  --surface-hover-subtle: rgba(0, 0, 0, 0.035);
+  --surface-hover-emphasis: rgba(0, 0, 0, 0.05);
+  --border: #dcdde3;
+  --border-strong: #c1c3cc;
+  --text: #202126;
+  --text-secondary: #42444c;
+  --muted: #646772;
+  --faint: #6b6e79;
+  --accent: #0065d1;
+  --accent-bright: #005bbd;
+  --accent-soft: rgba(0, 101, 209, 0.09);
+  --accent-border: rgba(0, 101, 209, 0.3);
+  --accent-halo: rgba(0, 101, 209, 0.04);
+  --accent-fill: #006bdc;
+  --accent-fill-hover: #005bbd;
+  --accent-fill-border: #0061cc;
+  --success: #247738;
+  --success-soft: rgba(36, 119, 56, 0.08);
+  --success-border: rgba(36, 119, 56, 0.25);
+  --success-text: #216a32;
+  --danger: #c12e27;
+  --danger-soft: rgba(193, 46, 39, 0.07);
+  --danger-border: rgba(193, 46, 39, 0.25);
+  --danger-text: #ac2721;
+  --danger-surface: #fff0ee;
+  --warning: #956000;
+  --warning-soft: rgba(149, 96, 0, 0.08);
+  --warning-border: rgba(149, 96, 0, 0.25);
+  --info: #006b90;
+  --info-soft: rgba(0, 107, 144, 0.09);
+  --diff-add-bg: rgba(36, 119, 56, 0.08);
+  --diff-del-bg: rgba(193, 46, 39, 0.07);
+  --diff-add-word-bg: rgba(36, 119, 56, 0.18);
+  --diff-del-word-bg: rgba(193, 46, 39, 0.17);
+  --diff-add-line-number: #39774b;
+  --diff-del-line-number: #ab4a45;
+  --syntax-plain: #24262b;
+  --syntax-comment: #646c77;
+  --syntax-keyword: #9b2393;
+  --syntax-string: #b12a20;
+  --syntax-number: #795800;
+  --syntax-function: #216881;
+  --syntax-tag: #0057a6;
+  --syntax-attribute: #895000;
+  --syntax-punctuation: #555965;
+  --shadow-overlay: 0 24px 80px rgba(26, 31, 44, 0.2);
+  --shadow-drawer: -24px 0 80px rgba(26, 31, 44, 0.15);
+  --shadow-card: 0 2px 8px rgba(26, 31, 44, 0.05);
+  --shadow-error: 0 12px 40px rgba(26, 31, 44, 0.12);
+  --status-idle-ring: 0 0 0 3px rgba(93, 98, 110, 0.1);
+  --success-halo: 0 0 0 9px rgba(36, 119, 56, 0.025);
+  --muted-halo: 0 0 0 9px rgba(0, 0, 0, 0.02);
+  --backdrop: rgba(30, 34, 42, 0.25);
+  --scrollbar-thumb: #b7bac4;
+  --scrollbar-thumb-hover: #9498a4;
+  --chrome: rgba(238, 239, 244, 0.88);
+  --sidebar-material: rgba(237, 238, 243, 0.9);
+  --chrome-highlight: rgba(255, 255, 255, 0.85);
+  --welcome-wash: rgba(124, 161, 211, 0.09);
+  --shadow-control: 0 1px 3px rgba(26, 31, 44, 0.08), inset 0 1px var(--chrome-highlight);
 }
 
 /*

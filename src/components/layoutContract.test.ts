@@ -47,8 +47,8 @@ describe("review layout contract", () => {
     expect(button.padding).toBe("var(--space-control-y) var(--space-control-x)");
     expect(button.width).toBe("32px");
     expect(button.height).toBe("32px");
-    expect(button["align-self"]).toBe("flex-end");
-    expect(button["margin-bottom"]).toBe("5px");
+    expect(button["align-self"]).toBe("center");
+    expect(button["margin-bottom"]).toBe("0");
     expect(button.background).toBe("transparent");
     expect(declarations(".add-tab-button svg").width).toBe("16px");
     expect(declarations(".icon-button.header-settings-button").width).toBe("32px");
@@ -91,8 +91,15 @@ describe("review layout contract", () => {
   it("gives both welcome actions the same dimensions", () => {
     const action = declarations(".welcome-action");
 
-    expect(action.width).toBe("200px");
-    expect(action.height).toBe("42px");
+    expect(action.width).toBe("240px");
+    expect(action.height).toBe("38px");
     expect(action.padding).toBe("0 16px");
+  });
+
+  it("keeps the welcome titlebar outside the scrollable content", () => {
+    expect(declarations(".welcome-shell").overflow).toBe("hidden");
+    expect(declarations(".welcome-scroll")["overflow-y"]).toBe("auto");
+    expect(declarations(".welcome-scroll")["min-height"]).toBe("0");
+    expect(declarations(".app-header").flex).toBe("0 0 var(--toolbar-height)");
   });
 });

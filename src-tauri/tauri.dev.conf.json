@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Patchdeck (Dev)",
+  "productName": "Patchdeck Local",
   "identifier": "com.local.patchdeck.dev",
   "build": {
     "beforeBuildCommand": "npm run build:dev"
@@ -8,7 +8,7 @@
   "app": {
     "windows": [
       {
-        "title": "Patchdeck (Dev)",
+        "title": "Patchdeck Local",
         "width": 1280,
         "height": 820,
         "minWidth": 920,

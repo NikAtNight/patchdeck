@@ -72,7 +72,7 @@ export function ExecutionProfilesSettings({ repositoryPath }: { repositoryPath: 
           <h3>Reusable agent settings</h3>
           <p>Choose a runtime, sandbox, model, and standing instructions once, then route cards through that profile.</p>
         </div>
-        <button className="primary-button settings-new-profile" onClick={() => startNew()}><PlusIcon /> New profile</button>
+        <button className="primary-button" onClick={() => startNew()}><PlusIcon /> New profile</button>
       </header>
 
       <section className="repository-default-card">

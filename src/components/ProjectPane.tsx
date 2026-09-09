@@ -341,6 +341,7 @@ export function ProjectPane({
     if (!active) return;
 
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || document.querySelector('[aria-modal="true"]')) return;
       const target = event.target instanceof HTMLElement ? event.target : null;
       if (
         editingPath
@@ -597,7 +598,7 @@ export function ProjectPane({
       <section className="compare-bar" aria-label="Branch comparison controls">
         <div className="branch-field">
           <label htmlFor={`${controlId}-base`}>Base</label>
-          <select id={`${controlId}-base`} value={baseBranch} disabled={repository.branches.length === 0} onChange={(event) => setBaseBranch(event.target.value)}>
+          <select id={`${controlId}-base`} value={baseBranch} title={baseBranch} disabled={repository.branches.length === 0} onChange={(event) => setBaseBranch(event.target.value)}>
             {repository.branches.length === 0 && <option value="">No branches</option>}
             {repository.branches.length > 0 && !baseBranch && <option value="">Select a branch</option>}
             {repository.branches.map((branch) => <option key={branch.name}>{branch.name}</option>)}
@@ -608,7 +609,7 @@ export function ProjectPane({
         </button>
         <div className="branch-field">
           <label htmlFor={`${controlId}-compare`}>Compare</label>
-          <select id={`${controlId}-compare`} value={compareBranch} disabled={repository.branches.length === 0} onChange={(event) => setCompareBranch(event.target.value)}>
+          <select id={`${controlId}-compare`} value={compareBranch} title={compareBranch} disabled={repository.branches.length === 0} onChange={(event) => setCompareBranch(event.target.value)}>
             {repository.branches.length === 0 && <option value="">No branches</option>}
             {repository.branches.length > 0 && !compareBranch && <option value="">Select a branch</option>}
             {repository.branches.map((branch) => <option key={branch.name}>{branch.name}</option>)}

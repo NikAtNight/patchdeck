@@ -56,7 +56,7 @@ Local agent runs are launched by a narrow Rust runtime adapter. Codex uses App S
 
 ## Theming
 
-Every color, font, and size comes from the design tokens in `src/theme.css`; component styles in `src/App.css` reference tokens only. The default scheme follows macOS dark-mode conventions: neutral gray surfaces, the system blue accent, Apple's semantic colors, and Xcode-style syntax highlighting. The window uses a macOS overlay title bar, with the app header acting as the draggable titlebar.
+Colors and typography come from the design tokens in `src/theme.css`. Settings → Appearance offers System, Light, and Dark. System follows the Mac's appearance changes; an explicit choice persists in this app's local storage. Syntax and diff colors follow the selected appearance. The window keeps its native macOS controls, with a persistent draggable toolbar above the scrolling content.
 
 To add a color scheme, add a `:root[data-theme="name"]` override block in `theme.css` and set `document.documentElement.dataset.theme`. Diff colors and syntax highlighting (`src/prismTheme.ts` reads the `--syntax-*` tokens) follow automatically. A `purple` scheme ships as a working example.
 
@@ -72,18 +72,35 @@ To add a color scheme, add a `:root[data-theme="name"]` override block in `theme
 
 ```bash
 npm install
-npm run tauri dev
+npm run local
 ```
+
+`npm run local` runs **Patchdeck Local** with Vite live updates and Tauri's Rust rebuild watcher. It uses `com.local.patchdeck.dev`, a separate app data directory, and its own Cargo target directory at `src-tauri/target/local`. The production application can keep running alongside it. Local builds never check for or install production updates.
+
+Install a Finder launcher once:
+
+```bash
+npm run local:install
+open "/Applications/Patchdeck Local.app"
+```
+
+The launcher starts the same live development session without a Terminal window. Opening it again brings an existing Local window forward. It points to this checkout, so reinstall the launcher if the checkout or Node executable moves. Existing launchers are backed up before replacement. Startup and rebuild output goes to `~/Library/Logs/Patchdeck Local/development.log`. The first launch compiles the Rust dependencies and takes longer than later launches.
+
+The native development process runs from `src-tauri/target/local/Patchdeck Local.app`, with its own Dock name and bundle identity. Use the launcher in `/Applications` to start it so the development server also starts. Quit Patchdeck Local to stop that session; closing its window keeps it available in the Dock. For a terminal session, Ctrl+C stops the development process and server. A duplicate session is refused. After a crash, if startup reports a stale `src-tauri/target/local/session.json` lock, check that no Local development session is running before removing that generated file and retrying.
+
+Local and production keep separate app state, but opening the same repository points both apps at the same working tree. File saves and explicitly started agent work still affect that repository.
 
 Run `npm run dev` for frontend-only interface work. The repository picker and Git operations require the Tauri desktop process and are unavailable in a normal browser tab.
 
-Build the side-by-side development app with:
+Build a standalone development snapshot with:
 
 ```bash
 npm run tauri:build:dev
 ```
 
-This produces **Patchdeck (Dev).app** with a separate bundle identifier and local data directory. Development builds do not check for or install production updates.
+This produces **Patchdeck Local.app** in the build output. It embeds a frontend snapshot and does not live reload. It shares the live app's development identity, so run only one Local instance at a time. Keep the Finder launcher in `/Applications` for live testing.
+
+See [the desktop workflow record](docs/flows/local-app-and-desktop-ui.md) for implementation boundaries and verification.
 
 ## Verification
 

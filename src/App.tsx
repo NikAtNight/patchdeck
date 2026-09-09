@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { isTauri } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openRepository, openWorkspace, openWorkspaceProject } from "./api";
 import { errorMessage } from "./errors";
@@ -56,7 +57,19 @@ function App() {
 
   useEffect(() => {
     function handleTabShortcut(event: KeyboardEvent) {
-      if (!event.metaKey || event.ctrlKey) return;
+      if (event.defaultPrevented || settingsOpen || document.querySelector('[aria-modal="true"], .file-editor')) return;
+      if (!event.metaKey || event.ctrlKey || event.altKey) return;
+      if (event.key === "," && !event.shiftKey) {
+        event.preventDefault();
+        setSettingsOpen(true);
+        return;
+      }
+      if (event.key.toLowerCase() === "o") {
+        event.preventDefault();
+        if (!openingProject) void (event.shiftKey ? chooseWorkspace() : chooseRepository());
+        return;
+      }
+      if (event.shiftKey) return;
       const target = event.target;
       if (target instanceof HTMLElement && (target.matches("input, textarea, select, [contenteditable]") || target.isContentEditable)) return;
       if (!/^[1-9]$/.test(event.key)) return;
@@ -68,7 +81,7 @@ function App() {
 
     window.addEventListener("keydown", handleTabShortcut);
     return () => window.removeEventListener("keydown", handleTabShortcut);
-  }, []);
+  }, [settingsOpen, openingProject]);
 
   useEffect(() => {
     const tab = tabs.find((candidate) => candidate.id === activeTabId);
@@ -146,6 +159,22 @@ function App() {
     });
   }
 
+  useEffect(() => {
+    if (!isTauri()) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<string>("app-menu", ({ payload }) => {
+      if (disposed || document.querySelector('[aria-modal="true"], .file-editor')) return;
+      if (payload === "settings") setSettingsOpen(true);
+      else if (!openingProject && payload === "open-repository") void chooseRepository();
+      else if (!openingProject && payload === "open-workspace") void chooseWorkspace();
+    }).then((dispose) => {
+      if (disposed) dispose();
+      else unlisten = dispose;
+    }).catch((reason) => setOpenError(errorMessage(reason)));
+    return () => { disposed = true; unlisten?.(); };
+  }, [openingProject]);
+
   function updateReviewTarget(target: ReviewTarget | null) {
     reviewTargetRequest.current += 1;
     const activePath = tabsRef.current.find((tab) => tab.id === activeTabId)?.path;
@@ -166,13 +195,21 @@ function App() {
   }
 
   async function chooseRepository() {
-    const path = await openDialog({ directory: true, multiple: false, title: "Open Git repository" });
-    if (typeof path === "string") await openProject(path);
+    try {
+      const path = await openDialog({ directory: true, multiple: false, title: "Open Git repository" });
+      if (typeof path === "string") await openProject(path);
+    } catch (reason) {
+      setOpenError(errorMessage(reason));
+    }
   }
 
   async function chooseWorkspace() {
-    const path = await openDialog({ directory: true, multiple: false, title: "Open workspace folder" });
-    if (typeof path === "string") await openWorkspaceProjects(path);
+    try {
+      const path = await openDialog({ directory: true, multiple: false, title: "Open workspace folder" });
+      if (typeof path === "string") await openWorkspaceProjects(path);
+    } catch (reason) {
+      setOpenError(errorMessage(reason));
+    }
   }
 
   async function openProject(path: string): Promise<RepositoryInfo | null> {
@@ -320,7 +357,8 @@ function App() {
   }
 
   return (
-    <div className={tabs.length === 0 ? "welcome-shell" : "app-shell"}>
+    <>
+    <div className={tabs.length === 0 ? "welcome-shell" : "app-shell"} inert={settingsOpen}>
       <WorkspaceHeader
         tabs={tabs}
         activeTabId={activeTabId}
@@ -335,12 +373,6 @@ function App() {
       />
       <div className="sr-only" aria-live="polite">{workspaceAnnouncement}</div>
       <AppUpdater />
-      <SettingsPanel
-        open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-        repositoryPath={activeRepositoryPath}
-        hermes={hermes}
-      />
 
       {tabs.length === 0 ? (
         <WelcomeScreen
@@ -387,6 +419,13 @@ function App() {
       )}
       {tabs.length > 0 && openError && <div className="workspace-error global"><ErrorBanner message={openError} /></div>}
     </div>
+    <SettingsPanel
+      open={settingsOpen}
+      onClose={() => setSettingsOpen(false)}
+      repositoryPath={activeRepositoryPath}
+      hermes={hermes}
+    />
+    </>
   );
 }
 

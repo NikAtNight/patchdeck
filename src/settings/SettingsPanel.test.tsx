@@ -5,6 +5,7 @@ import type { HermesSessionController } from "../hermes/types";
 import { getExecutionProfileDocument, resetExecutionProfiles } from "../providers/profiles";
 import type { AgentRuntimeStatus } from "../providers/types";
 import { SettingsPanel } from "./SettingsPanel";
+import { setAppearancePreference } from "../appearance";
 
 const providerMocks = vi.hoisted(() => ({
   listAgentRuntimes: vi.fn(),
@@ -43,6 +44,7 @@ const claude: AgentRuntimeStatus = {
 describe("SettingsPanel", () => {
   beforeEach(() => {
     localStorage.clear();
+    setAppearancePreference("system");
     resetExecutionProfiles();
     providerMocks.listAgentRuntimes.mockReset();
     providerMocks.connectAgentRuntime.mockReset();
@@ -76,6 +78,27 @@ describe("SettingsPanel", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Use running Hermes" }));
     expect(hermes.connectDiscovered).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens Agent Board help without Hermes and links to provider and profile settings", async () => {
+    const hermes = disconnectedHermes();
+    render(<SettingsPanel open onClose={vi.fn()} repositoryPath={null} hermes={hermes} />);
+    fireEvent.click(screen.getByRole("button", { name: "Help" }));
+    expect(screen.getByRole("heading", { name: "Use the Agent Board without Hermes" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Open Providers" }));
+    expect(screen.getByRole("button", { name: "Providers" })).toHaveAttribute("aria-current", "page");
+    expect(await screen.findByRole("article", { name: "Codex" })).toBeInTheDocument();
+    expect(screen.getByRole("article", { name: "Claude Code" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Help" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open Execution Profiles" }));
+    expect(screen.getByRole("button", { name: "Execution Profiles" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByLabelText("Default execution profile")).toBeDisabled();
+    expect(providerMocks.connectAgentRuntime).not.toHaveBeenCalled();
+    expect(hermes.connectDiscovered).not.toHaveBeenCalled();
+    expect(hermes.connectManaged).not.toHaveBeenCalled();
+    expect(hermes.connectExisting).not.toHaveBeenCalled();
   });
 
   it("creates, selects, edits, and deletes a repository execution profile", async () => {
@@ -126,6 +149,35 @@ describe("SettingsPanel", () => {
 
     fireEvent.keyDown(window, { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies an appearance choice and remembers it when Settings is reopened", () => {
+    const props = { open: true, onClose: vi.fn(), repositoryPath: null, hermes: disconnectedHermes() };
+    const { rerender } = render(<SettingsPanel {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: "Appearance" }));
+    expect(screen.getByRole("radio", { name: /System/ })).toBeChecked();
+    fireEvent.click(screen.getByRole("radio", { name: /Dark/ }));
+    expect(document.documentElement.dataset.appearance).toBe("dark");
+    expect(localStorage.getItem("patchdeck.appearance")).toBe("dark");
+
+    rerender(<SettingsPanel {...props} open={false} />);
+    rerender(<SettingsPanel {...props} />);
+    expect(screen.getByRole("radio", { name: /Dark/ })).toBeChecked();
+  });
+
+  it("contains programmatic focus and restores the trigger after closing", () => {
+    const trigger = document.createElement("button");
+    document.body.append(trigger);
+    trigger.focus();
+    const props = { open: true, onClose: vi.fn(), repositoryPath: null, hermes: disconnectedHermes() };
+    const { rerender } = render(<SettingsPanel {...props} />);
+    expect(screen.getByRole("button", { name: "Close settings" })).toHaveFocus();
+    trigger.focus();
+    expect(screen.getByRole("button", { name: "Close settings" })).toHaveFocus();
+
+    rerender(<SettingsPanel {...props} open={false} />);
+    expect(trigger).toHaveFocus();
+    trigger.remove();
   });
 });
 
