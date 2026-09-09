@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HermesBoard } from "./HermesBoard";
@@ -236,6 +236,7 @@ describe("Hermes workspace", () => {
 
     const first = render(<HermesBoard session={session} repositoryPath="/work/first" onReviewTask={vi.fn()} />);
     const firstPicker = await screen.findByRole("combobox", { name: "Board" });
+    await within(firstPicker).findByRole("option", { name: /Operations/ });
     fireEvent.change(firstPicker, { target: { value: "operations" } });
     await waitFor(() => expect(firstPicker).toHaveValue("operations"));
     first.unmount();
