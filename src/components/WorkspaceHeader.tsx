@@ -69,7 +69,7 @@ export function WorkspaceHeader({
       {tabs.length > 0 && (
         <nav className="surface-switch" aria-label="Workspace surface">
           <button className={activeSurface === "review" ? "active" : ""} aria-pressed={activeSurface === "review"} onClick={() => onSurfaceChange("review")}>Review</button>
-          <button className={activeSurface === "agent" ? "active" : ""} aria-pressed={activeSurface === "agent"} onClick={() => onSurfaceChange("agent")}>Agent board</button>
+          <button className={activeSurface === "agent" ? "active" : ""} aria-pressed={activeSurface === "agent"} onClick={() => onSurfaceChange("agent")}>Work</button>
         </nav>
       )}
       {tabs.length === 0 && <div className="header-app-name">Patchdeck</div>}

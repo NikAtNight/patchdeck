@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { initSessionStore, readAppSurface, readProjectSession, readProjectView, readRecentRepositories } from "./session";
+import { initSessionStore, readAppSurface, readProjectSession, readProjectView, readRecentRepositories, readReviewScreen, writeReviewScreen } from "./session";
 
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
@@ -30,6 +30,14 @@ describe("Patchdeck session storage", () => {
     expect(readProjectSession().tabs).toHaveLength(1);
     expect(localStorage.getItem("patchdeck.session")).not.toBeNull();
     expect(localStorage.getItem(`${prePatchdeckPrefix}.session`)).toBeNull();
+  });
+
+  it("starts Review at the worktree queue and remembers an explicit screen choice", () => {
+    expect(readReviewScreen()).toBe("worktrees");
+    writeReviewScreen("changes");
+    expect(readReviewScreen()).toBe("changes");
+    writeReviewScreen("worktrees");
+    expect(readReviewScreen()).toBe("worktrees");
   });
 
   it("imports known values supplied by the previous native WebKit container", async () => {

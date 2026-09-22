@@ -6,6 +6,9 @@ import { openRepository, openWorkspace, openWorkspaceProject } from "./api";
 import { errorMessage } from "./errors";
 import type { RepositoryInfo, WorkspaceProject } from "./types";
 import { ProjectLoadingPane, ProjectPane } from "./components/ProjectPane";
+import type { WorkingTreeReviewRequest } from "./components/ProjectPane";
+import { WorktreeReviewQueue } from "./components/WorktreeReviewQueue";
+import type { WorktreeReviewSelection } from "./components/WorktreeReviewQueue";
 import { WelcomeScreen } from "./components/WelcomeScreen";
 import { WorkspaceHeader } from "./components/WorkspaceHeader";
 import { AppUpdater } from "./components/AppUpdater";
@@ -19,12 +22,16 @@ import {
   readAppSurface,
   readProjectSession,
   readRecentRepositories,
+  readReviewScreen,
   writeAppSurface,
   writeRecentRepositories,
+  writeReviewScreen,
 } from "./session";
 import type { AppSurface, ProjectTab } from "./session";
 import type { AgentRuntimeEvent } from "./providers/types";
 import { applyAgentRuntimeEvent } from "./localBoard/runtime";
+import type { AgentWorkspaceOpenRequest, BoardSource, BoardViewState, WorkNavigationState } from "./localBoard/AgentWorkspace";
+import { getLocalBoardDocument } from "./localBoard/store";
 import "./App.css";
 
 // The workbench carries board and Markdown renderers; load it only when opened.
@@ -41,8 +48,20 @@ function App() {
   const [openError, setOpenError] = useState<string | null>(null);
   const [workspaceAnnouncement, setWorkspaceAnnouncement] = useState("");
   const [activeSurface, setActiveSurface] = useState<AppSurface>(readAppSurface);
+  const [reviewScreen, setReviewScreen] = useState(readReviewScreen);
+  const [workingTreeRequest, setWorkingTreeRequest] = useState<WorkingTreeReviewRequest | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [localCardToOpen, setLocalCardToOpen] = useState<string | null>(null);
+  const [agentBoardSource, setAgentBoardSource] = useState<BoardSource>("local");
+  const [workNavigation, setWorkNavigation] = useState<WorkNavigationState | undefined>();
+  const [agentBoardViewStates, setAgentBoardViewStates] = useState<Record<string, BoardViewState>>({});
+  const [agentOpenRequest, setAgentOpenRequest] = useState<AgentWorkspaceOpenRequest | null>(null);
+  const [reviewReturn, setReviewReturn] = useState<{
+    source: AgentWorkspaceOpenRequest["source"];
+    itemId: string;
+    repositoryPath: string | null;
+    reviewRepositoryPath: string;
+  } | null>(null);
+  const nextAgentOpenRequest = useRef(1);
   const initialActivePath = initialSession.tabs.find((tab) => tab.id === initialSession.activeTabId)?.path;
   const [reviewTarget, setReviewTarget] = useState<ReviewTarget | null>(() =>
     initialActivePath ? readReviewTarget(initialActivePath) : null
@@ -55,6 +74,7 @@ function App() {
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
   const activeRepositoryPath = tabs.find((tab) => tab.id === activeTabId)?.path ?? null;
+  const activeTab = tabs.find((tab) => tab.id === activeTabId);
 
   useEffect(() => {
     function handleTabShortcut(event: KeyboardEvent) {
@@ -119,6 +139,10 @@ function App() {
   }, [activeSurface]);
 
   useEffect(() => {
+    writeReviewScreen(reviewScreen);
+  }, [reviewScreen]);
+
+  useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
     void listen<AgentRuntimeEvent>("agent-runtime-event", ({ payload }) => {
@@ -142,7 +166,12 @@ function App() {
     const repositoryPath = target.repositoryPath;
     if (!repositoryPath) return;
     const request = ++reviewTargetRequest.current;
+    const source = target.source === "local" ? "local" : `hermes:${target.board}` as const;
+    setAgentBoardSource(source);
+    setReviewReturn({ source, itemId: target.taskId, repositoryPath: activeRepositoryPath, reviewRepositoryPath: repositoryPath });
     setReviewTarget(target);
+    setWorkingTreeRequest(null);
+    setReviewScreen("changes");
     writeReviewTarget(repositoryPath, target);
     setActiveSurface("review");
     const existing = tabsRef.current.find((tab) => tab.path === repositoryPath);
@@ -158,6 +187,51 @@ function App() {
       writeReviewTarget(repository.path, resolved);
       setReviewTarget(resolved);
     });
+  }
+
+  async function openWorktreeReview(selection: WorktreeReviewSelection) {
+    const request = ++reviewTargetRequest.current;
+    const repository = await openProject(selection.repositoryPath);
+    if (!repository || request !== reviewTargetRequest.current) return;
+    setTabs((current) => current.map((tab) => tab.path === repository.path
+      ? { ...tab, repository, name: repository.name }
+      : tab));
+    writeReviewTarget(repository.path, null);
+    setReviewTarget(null);
+    setReviewReturn(null);
+    setWorkingTreeRequest({ id: request, repositoryPath: repository.path, baseBranch: selection.baseBranch });
+    setReviewScreen("changes");
+    setActiveSurface("review");
+  }
+
+  function returnToReviewTarget(target: ReviewTarget) {
+    const fallbackSource: AgentWorkspaceOpenRequest["source"] = target.source === "local" ? "local" : `hermes:${target.board}`;
+    const localCard = target.source === "local"
+      ? getLocalBoardDocument().cards.find((card) => card.id === target.taskId)
+      : null;
+    const destination = reviewReturn?.itemId === target.taskId && reviewReturn.source === fallbackSource
+      ? reviewReturn
+      : {
+          source: fallbackSource,
+          itemId: target.taskId,
+          repositoryPath: localCard?.repositoryPath ?? target.repositoryPath ?? null,
+          reviewRepositoryPath: target.repositoryPath ?? localCard?.workspace?.worktreePath ?? "",
+        };
+    setAgentBoardSource(destination.source);
+    setAgentOpenRequest({ id: nextAgentOpenRequest.current++, source: destination.source, itemId: destination.itemId });
+    if (destination.repositoryPath) activateRepository(destination.repositoryPath);
+    setActiveSurface("agent");
+  }
+
+  function changeSurface(surface: AppSurface) {
+    reviewTargetRequest.current += 1;
+    const inReviewContext = reviewReturn
+      && (activeRepositoryPath === reviewReturn.repositoryPath || activeRepositoryPath === reviewReturn.reviewRepositoryPath);
+    if (reviewReturn && inReviewContext) {
+      const repositoryPath = surface === "agent" ? reviewReturn.repositoryPath : reviewReturn.reviewRepositoryPath;
+      if (repositoryPath) activateRepository(repositoryPath);
+    }
+    setActiveSurface(surface);
   }
 
   useEffect(() => {
@@ -182,6 +256,7 @@ function App() {
     const repositoryPath = target?.repositoryPath ?? activePath;
     if (!repositoryPath) return;
     setReviewTarget(target);
+    if (!target) setReviewReturn(null);
     writeReviewTarget(repositoryPath, target);
   }
 
@@ -369,7 +444,7 @@ function App() {
         onOpenRepository={chooseRepository}
         onOpenWorkspace={chooseWorkspace}
         activeSurface={activeSurface}
-        onSurfaceChange={setActiveSurface}
+        onSurfaceChange={changeSurface}
         onOpenSettings={() => setSettingsOpen(true)}
       />
       <div className="sr-only" aria-live="polite">{workspaceAnnouncement}</div>
@@ -390,13 +465,28 @@ function App() {
             hermes={hermes}
             repositoryPath={activeRepositoryPath ?? undefined}
             onReviewTask={selectReviewTarget}
-            initialLocalCardId={localCardToOpen ?? undefined}
-            onInitialCardOpened={() => setLocalCardToOpen(null)}
+            initialSource={agentBoardSource}
+            initialNavigation={workNavigation}
+            onNavigationChange={setWorkNavigation}
+            viewStates={agentBoardViewStates}
+            openRequest={agentOpenRequest}
+            onSourceChange={setAgentBoardSource}
+            onViewStateChange={(key, state) => setAgentBoardViewStates((current) => ({ ...current, [key]: state }))}
+            onOpenRequestConsumed={(id) => setAgentOpenRequest((current) => current?.id === id ? null : current)}
             onOpenRepository={activateRepository}
           />
         </Suspense>
       ) : (
-        <div className="project-stack">
+        <>
+        <nav className="review-navigation" aria-label="Review navigation">
+          <button aria-pressed={reviewScreen === "worktrees"} onClick={() => setReviewScreen("worktrees")}>Worktrees</button>
+          <button aria-pressed={reviewScreen === "changes"} onClick={() => setReviewScreen("changes")}>Changes</button>
+        </nav>
+        {reviewScreen === "worktrees" ? (
+          activeTab?.repository ? (
+            <WorktreeReviewQueue repository={activeTab.repository} onOpenReview={(selection) => void openWorktreeReview(selection)} opening={openingProject} />
+          ) : activeTab ? <ProjectLoadingPane tab={activeTab} active onRetry={() => retryTab(activeTab.id)} /> : null
+        ) : <div className="project-stack">
           {tabs.map((tab) => (
             tab.repository ? (
               <ProjectPane
@@ -408,11 +498,9 @@ function App() {
                 reviewTarget={reviewTarget}
                 onReviewTargetUpdated={updateReviewTarget}
                 agentAttached={agentAttached}
-                onReturnToCard={(cardId, repositoryPath) => {
-                  setLocalCardToOpen(cardId);
-                  activateRepository(repositoryPath);
-                  setActiveSurface("agent");
-                }}
+                onReturnToReviewTarget={returnToReviewTarget}
+                workingTreeRequest={workingTreeRequest}
+                onWorkingTreeRequestConsumed={(id) => setWorkingTreeRequest((current) => current?.id === id ? null : current)}
               />
             ) : (
               <ProjectLoadingPane
@@ -423,7 +511,8 @@ function App() {
               />
             )
           ))}
-        </div>
+        </div>}
+        </>
       )}
       {tabs.length > 0 && openError && <div className="workspace-error global"><ErrorBanner message={openError} /></div>}
     </div>

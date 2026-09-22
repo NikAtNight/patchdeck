@@ -97,21 +97,28 @@ function persistBoardSelection(repositoryPath: string | undefined, board: string
   localStorage.removeItem(LEGACY_BOARD_KEY);
 }
 
-export function HermesBoard({ session, repositoryPath, onReviewTask, boardSlug, initialTaskId, onCreateTask }: {
+export function HermesBoard({ session, repositoryPath, scopeRepositoryPaths, workFilter, query = "", onReviewTask, boardSlug, initialTaskId, initialIncludeArchived = false, onInitialTaskOpened, onIncludeArchivedChange, onCreateTask }: {
   session: HermesSessionController;
   repositoryPath?: string;
+  scopeRepositoryPaths?: string[];
+  workFilter?: "all" | "attention" | "active" | "completed" | "archived";
+  query?: string;
   onReviewTask: (target: ReviewTarget) => void;
   boardSlug?: string;
   initialTaskId?: string | null;
+  initialIncludeArchived?: boolean;
+  onInitialTaskOpened?: () => void;
+  onIncludeArchivedChange?: (includeArchived: boolean) => void;
   onCreateTask?: (board: string, targetStatus: string) => void;
 }) {
   const connected = session.status.state === "connected" || session.status.state === "degraded";
+  const sessionScope = `${session.status.mode ?? ""}:${session.status.url ?? ""}`;
   const refreshConnection = session.refresh;
   const [boards, setBoards] = useState<HermesBoardMeta[]>([]);
   const [profiles, setProfiles] = useState<HermesProfile[]>([]);
   const [selectedBoard, setSelectedBoard] = useState(() => boardSlug ?? readBoardSelection(repositoryPath));
   const [board, setBoard] = useState<HermesBoardData | null>(null);
-  const [includeArchived, setIncludeArchived] = useState(false);
+  const [includeArchived, setIncludeArchived] = useState(initialIncludeArchived);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -119,12 +126,23 @@ export function HermesBoard({ session, repositoryPath, onReviewTask, boardSlug, 
   const [createColumn, setCreateColumn] = useState<string | null>(null);
   const [eventsLive, setEventsLive] = useState(false);
   const [taskEventNonce, setTaskEventNonce] = useState(0);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(() => new Set());
+  const [bulkArchiving, setBulkArchiving] = useState(false);
+  const [bulkNotice, setBulkNotice] = useState<{ message: string; failed: boolean } | null>(null);
   const selectedTaskRef = useRef<string | null>(null);
   selectedTaskRef.current = selectedTaskId;
   const eventRefreshTimer = useRef<number | undefined>(undefined);
   const boardRequest = useRef(0);
   const metadataRequest = useRef(0);
+  const bulkArchiveRequest = useRef(0);
+  const bulkArchivingRef = useRef(false);
+  const openedInitialTaskRef = useRef<string | null>(null);
   const repositoryScopeRef = useRef(boardSelectionScope(repositoryPath));
+  const selectedBoardRef = useRef(selectedBoard);
+  const sessionScopeRef = useRef(sessionScope);
+  selectedBoardRef.current = selectedBoard;
+  sessionScopeRef.current = sessionScope;
 
   const loadMetadata = useCallback(async () => {
     if (!connected) return;
@@ -156,11 +174,36 @@ export function HermesBoard({ session, repositoryPath, onReviewTask, boardSlug, 
   }, [boardSlug, initialTaskId, selectedBoard]);
 
   useEffect(() => {
-    if (initialTaskId) setSelectedTaskId(initialTaskId);
-  }, [initialTaskId]);
+    if (!initialTaskId || openedInitialTaskRef.current === initialTaskId) return;
+    openedInitialTaskRef.current = initialTaskId;
+    setSelectedTaskId(initialTaskId);
+    onInitialTaskOpened?.();
+  }, [initialTaskId, onInitialTaskOpened]);
+
+  useEffect(() => {
+    setIncludeArchived(initialIncludeArchived);
+  }, [initialIncludeArchived]);
+
+  useEffect(() => {
+    if (workFilter !== undefined) setIncludeArchived(workFilter === "archived");
+  }, [workFilter]);
+
+  useEffect(() => {
+    bulkArchiveRequest.current += 1;
+    bulkArchivingRef.current = false;
+    setBulkArchiving(false);
+    setSelectionMode(false);
+    setSelectedTaskIds(new Set());
+    setBulkNotice(null);
+  }, [selectedBoard, sessionScope]);
+
+  useEffect(() => () => {
+    bulkArchiveRequest.current += 1;
+    bulkArchivingRef.current = false;
+  }, []);
 
   const loadBoard = useCallback(async (quiet = false) => {
-    if (!connected || !selectedBoard) return;
+    if (!connected || !selectedBoard || bulkArchivingRef.current) return;
     const request = ++boardRequest.current;
     if (!quiet) setLoading(true);
     try {
@@ -248,14 +291,102 @@ export function HermesBoard({ session, repositoryPath, onReviewTask, boardSlug, 
   const columns = useMemo(() => {
     const byName = new Map((board?.columns ?? []).map((column) => [column.name, column.tasks]));
     const names = includeArchived ? [...CANONICAL_COLUMNS, "archived"] : CANONICAL_COLUMNS;
-    const known = names.map((name) => ({ name, tasks: byName.get(name) ?? [] }));
+    const filterTasks = (tasks: HermesTask[]) => tasks.filter((task) => matchesHermesWorkFilter(task, workFilter ?? (includeArchived ? "archived" : "all"), query, scopeRepositoryPaths));
+    const known = names.map((name) => ({ name, tasks: filterTasks(byName.get(name) ?? []) }));
     // Never drop tasks: lanes Hermes reports beyond the canonical set render
     // after them instead of silently disappearing.
     const extras = (board?.columns ?? [])
       .filter((column) => !names.includes(column.name) && column.name !== "archived")
-      .map((column) => ({ name: column.name, tasks: column.tasks }));
+      .map((column) => ({ name: column.name, tasks: filterTasks(column.tasks) }));
     return [...known, ...extras];
-  }, [board, includeArchived]);
+  }, [board, includeArchived, query, scopeRepositoryPaths, workFilter]);
+
+  useEffect(() => {
+    if (bulkArchivingRef.current) return;
+    const visibleArchivableIds = new Set(columns.flatMap((column) => column.tasks.filter(canArchiveHermesTask).map((task) => task.id)));
+    setSelectedTaskIds((current) => {
+      const next = new Set([...current].filter((id) => visibleArchivableIds.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [columns]);
+
+  function toggleTaskSelection(taskId: string) {
+    setSelectedTaskIds((current) => {
+      const next = new Set(current);
+      if (next.has(taskId)) next.delete(taskId);
+      else next.add(taskId);
+      return next;
+    });
+  }
+
+  function toggleColumnSelection(tasks: HermesTask[]) {
+    const selectable = tasks.filter(canArchiveHermesTask).map((task) => task.id);
+    const allSelected = selectable.length > 0 && selectable.every((id) => selectedTaskIds.has(id));
+    setSelectedTaskIds((current) => {
+      const next = new Set(current);
+      selectable.forEach((id) => allSelected ? next.delete(id) : next.add(id));
+      return next;
+    });
+  }
+
+  async function archiveSelectedTasks() {
+    if (bulkArchivingRef.current || selectedTaskIds.size === 0) return;
+    const taskIds = [...selectedTaskIds];
+    if (!window.confirm(`Archive ${taskIds.length} Hermes task${taskIds.length === 1 ? "" : "s"}?`)) return;
+    const operation = ++bulkArchiveRequest.current;
+    const operationBoard = selectedBoard;
+    const operationSession = sessionScope;
+    const selectedTasks = new Map(columns.flatMap((column) => column.tasks).filter((task) => selectedTaskIds.has(task.id)).map((task) => [task.id, task]));
+    bulkArchivingRef.current = true;
+    setBulkArchiving(true);
+    setLoading(false);
+    setBulkNotice(null);
+    boardRequest.current += 1;
+    const archivedIds: string[] = [];
+    const failedIds: string[] = [];
+    for (const taskId of taskIds) {
+      if (operation !== bulkArchiveRequest.current || operationBoard !== selectedBoardRef.current || operationSession !== sessionScopeRef.current) return;
+      try {
+        await patchHermesTaskStatus(operationBoard, taskId, "archived");
+        archivedIds.push(taskId);
+      } catch {
+        failedIds.push(taskId);
+      }
+    }
+    if (operation !== bulkArchiveRequest.current || operationBoard !== selectedBoardRef.current || operationSession !== sessionScopeRef.current) return;
+    boardRequest.current += 1;
+    const archivedSet = new Set(archivedIds);
+    if (archivedSet.size > 0) {
+      setBoard((current) => {
+        if (!current) return current;
+        const columnsWithoutArchived = current.columns.map((column) => ({
+          ...column,
+          tasks: column.tasks.filter((task) => !archivedSet.has(task.id)),
+        }));
+        if (!includeArchived) return { ...current, columns: columnsWithoutArchived };
+        const archivedTasks = archivedIds.flatMap((id) => {
+          const task = selectedTasks.get(id);
+          return task ? [{ ...task, status: "archived" }] : [];
+        });
+        const archivedColumn = columnsWithoutArchived.find((column) => column.name === "archived");
+        return {
+          ...current,
+          columns: archivedColumn
+            ? columnsWithoutArchived.map((column) => column.name === "archived" ? { ...column, tasks: [...column.tasks, ...archivedTasks] } : column)
+            : [...columnsWithoutArchived, { name: "archived", tasks: archivedTasks }],
+        };
+      });
+    }
+    setSelectedTaskIds(new Set(failedIds));
+    setBulkNotice({
+      message: failedIds.length
+        ? `${archivedIds.length} task${archivedIds.length === 1 ? "" : "s"} archived. ${failedIds.length} failed and ${failedIds.length === 1 ? "remains" : "remain"} selected.`
+        : `${archivedIds.length} task${archivedIds.length === 1 ? "" : "s"} archived.`,
+      failed: failedIds.length > 0,
+    });
+    bulkArchivingRef.current = false;
+    setBulkArchiving(false);
+  }
 
   function chooseBoard(slug: string) {
     boardRequest.current += 1;
@@ -290,16 +421,32 @@ export function HermesBoard({ session, repositoryPath, onReviewTask, boardSlug, 
             </select>
           </label>
         )}
-        <label className="archive-toggle">
-          <input type="checkbox" checked={includeArchived} onChange={(event) => setIncludeArchived(event.target.checked)} />
+        {workFilter === undefined && <label className="archive-toggle">
+          <input type="checkbox" checked={includeArchived} disabled={bulkArchiving} onChange={(event) => {
+            setIncludeArchived(event.target.checked);
+            onIncludeArchivedChange?.(event.target.checked);
+          }} />
           Archived
-        </label>
+        </label>}
+        <button className="secondary-button board-selection-toggle" disabled={bulkArchiving} aria-pressed={selectionMode} onClick={() => {
+          setSelectionMode((current) => !current);
+          setSelectedTaskIds(new Set());
+          setBulkNotice(null);
+        }}>{selectionMode ? "Cancel selection" : "Select tasks"}</button>
         <span className="agent-worker-summary"><span className="live-pulse" />{session.status.activeWorkers} active workers</span>
-        <button className="icon-button" aria-label="Refresh agent board" title="Refresh agent board" onClick={() => void loadBoard()} disabled={loading}><RefreshIcon /></button>
+        <button className="icon-button" aria-label="Refresh agent board" title="Refresh agent board" onClick={() => void loadBoard()} disabled={loading || bulkArchiving}><RefreshIcon /></button>
       </header>
 
       {error && <div className="board-error" role="alert">{error}</div>}
       {notice && <div className="board-error" role="alert">{notice}</div>}
+      {bulkNotice && <div className={bulkNotice.failed ? "board-action-notice partial" : "board-action-notice"} role={bulkNotice.failed ? "alert" : "status"}>{bulkNotice.message}</div>}
+      {selectionMode && (
+        <div className="board-selection-bar" aria-live="polite">
+          <strong>{selectedTaskIds.size} selected</strong>
+          <button className="secondary-button" disabled={selectedTaskIds.size === 0 || bulkArchiving} onClick={() => setSelectedTaskIds(new Set())}>Clear</button>
+          <button className="primary-button" disabled={selectedTaskIds.size === 0 || bulkArchiving} onClick={() => void archiveSelectedTasks()}>{bulkArchiving ? "Archiving…" : "Archive selected"}</button>
+        </div>
+      )}
       {loading && !board ? (
         <div className="board-loading">Loading Hermes board…</div>
       ) : (
@@ -311,12 +458,17 @@ export function HermesBoard({ session, repositoryPath, onReviewTask, boardSlug, 
                   <span className="lane-dot" />
                   <strong>{COLUMN_LABELS[column.name] ?? column.name}</strong>
                   <span className="lane-count">{column.tasks.length}</span>
+                  {selectionMode && column.tasks.some(canArchiveHermesTask) && (
+                    <button className="lane-select-button" disabled={bulkArchiving} onClick={() => toggleColumnSelection(column.tasks)} aria-label={`${column.tasks.filter(canArchiveHermesTask).every((task) => selectedTaskIds.has(task.id)) ? "Clear" : "Select"} all archivable tasks in ${COLUMN_LABELS[column.name] ?? column.name}`}>
+                      {column.tasks.filter(canArchiveHermesTask).every((task) => selectedTaskIds.has(task.id)) ? "Clear" : "Select all"}
+                    </button>
+                  )}
                   {CREATABLE_COLUMNS.has(column.name) && (
                     <button className="lane-create-button" aria-label={`New task in ${COLUMN_LABELS[column.name] ?? column.name}`} onClick={() => onCreateTask ? onCreateTask(selectedBoard, column.name) : setCreateColumn(column.name)}>+</button>
                   )}
                 </header>
                 <div className="kanban-card-list">
-                  {column.tasks.map((task) => <TaskCard key={task.id} task={task} onOpen={() => setSelectedTaskId(task.id)} />)}
+                  {column.tasks.map((task) => <TaskCard key={task.id} task={task} onOpen={() => setSelectedTaskId(task.id)} selecting={selectionMode} selected={selectedTaskIds.has(task.id)} selectable={canArchiveHermesTask(task)} selectionDisabled={bulkArchiving} onToggle={() => toggleTaskSelection(task.id)} />)}
                   {column.tasks.length === 0 && <div className="empty-lane">No tasks</div>}
                 </div>
               </section>
@@ -354,22 +506,37 @@ export function HermesBoard({ session, repositoryPath, onReviewTask, boardSlug, 
   );
 }
 
-function TaskCard({ task, onOpen }: { task: HermesTask; onOpen: () => void }) {
+function TaskCard({ task, onOpen, selecting, selected, selectable, selectionDisabled, onToggle }: {
+  task: HermesTask;
+  onOpen: () => void;
+  selecting: boolean;
+  selected: boolean;
+  selectable: boolean;
+  selectionDisabled: boolean;
+  onToggle: () => void;
+}) {
   return (
-    <button className="kanban-card" onClick={onOpen}>
-      <span className="task-id">{task.id}</span>
-      <strong>{task.title}</strong>
-      {task.latest_summary && <p>{task.latest_summary}</p>}
-      <span className="task-card-footer">
-        <span className="task-assignee">{task.assignee || "Unassigned"}</span>
-        <span className="task-signals">
-          {!!task.comment_count && <span title="Comments">◌ {task.comment_count}</span>}
-          {task.progress && <span>{task.progress.done}/{task.progress.total}</span>}
-          {!!task.warnings?.count && <span className="warning-count">⚠ {task.warnings.count}</span>}
-          {task.status === "running" && <span className="running-label"><span className="live-pulse" />live</span>}
+    <div className={`selectable-kanban-card${selected ? " selected" : ""}`}>
+      {selecting && (
+        <label className="card-selection-control" title={selectable ? undefined : "This task cannot move directly to Archived."}>
+          <input type="checkbox" aria-label={`Select Hermes task ${task.title}`} checked={selected} disabled={!selectable || selectionDisabled} onChange={onToggle} />
+        </label>
+      )}
+      <button className="kanban-card" disabled={selecting && (!selectable || selectionDisabled)} title={selecting && !selectable ? "This task cannot move directly to Archived." : undefined} onClick={selecting ? (selectable && !selectionDisabled ? onToggle : undefined) : onOpen}>
+        <span className="task-id">{task.id}</span>
+        <strong>{task.title}</strong>
+        {task.latest_summary && <p>{task.latest_summary}</p>}
+        <span className="task-card-footer">
+          <span className="task-assignee">{task.assignee || "Unassigned"}</span>
+          <span className="task-signals">
+            {!!task.comment_count && <span title="Comments">◌ {task.comment_count}</span>}
+            {task.progress && <span>{task.progress.done}/{task.progress.total}</span>}
+            {!!task.warnings?.count && <span className="warning-count">⚠ {task.warnings.count}</span>}
+            {task.status === "running" && <span className="running-label"><span className="live-pulse" />live</span>}
+          </span>
         </span>
-      </span>
-    </button>
+      </button>
+    </div>
   );
 }
 
@@ -732,6 +899,37 @@ function taskTransitionActions(current: string) {
     if (status === "archived") return { status, label: "Archive", ariaLabel: "Archive task", destructive: true };
     return { status, label: `→ ${COLUMN_LABELS[status] ?? status}`, ariaLabel: `Move task to ${status}` };
   });
+}
+
+function canArchiveHermesTask(task: HermesTask) {
+  return TASK_TRANSITIONS[task.status]?.includes("archived") ?? false;
+}
+
+function matchesHermesWorkFilter(
+  task: HermesTask,
+  filter: "all" | "attention" | "active" | "completed" | "archived",
+  query: string,
+  scopeRepositoryPaths?: string[],
+) {
+  if (scopeRepositoryPaths && !scopeRepositoryPaths.some((path) => normalizePath(path) === normalizePath(task.workspace_path ?? ""))) return false;
+  if (filter === "archived") {
+    if (task.status !== "archived") return false;
+  } else if (task.status === "archived") {
+    return false;
+  } else if (filter === "attention" && task.status !== "blocked" && task.status !== "review") {
+    return false;
+  } else if (filter === "active" && !["scheduled", "ready", "running"].includes(task.status)) {
+    return false;
+  } else if (filter === "completed" && task.status !== "done") {
+    return false;
+  }
+  const needle = query.trim().toLocaleLowerCase();
+  return !needle || [task.id, task.title, task.body ?? "", task.latest_summary ?? "", task.workspace_path ?? ""]
+    .some((value) => value.toLocaleLowerCase().includes(needle));
+}
+
+function normalizePath(path: string) {
+  return path.replace(/[\\/]+$/, "");
 }
 
 function formatPayload(payload: unknown) {

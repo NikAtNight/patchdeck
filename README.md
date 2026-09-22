@@ -7,6 +7,7 @@ The MVP targets macOS. It is built with Tauri 2, React, TypeScript, and Rust.
 ## What it does
 
 - Opens a local Git working tree from any folder inside it.
+- Discovers existing Git worktrees in a Review queue, with changed-file counts, review progress, and filters for work awaiting review or changed since review. External agent work can be reviewed without a card.
 - Opens a plain workspace folder and discovers Git repositories in its immediate child folders; the workspace root does not need Git.
 - Loads workspace project metadata and comparisons only when each tab is first activated.
 - Lists local branches and selects the checked-out branch for comparison.
@@ -26,11 +27,15 @@ The MVP targets macOS. It is built with Tauri 2, React, TypeScript, and Rust.
 - Discovers a running local Hermes dashboard on its standard ports, starts a managed `hermes serve` process, or attaches to another loopback server with a session token.
 - Shows Hermes connection health and active worker count in the top-right.
 - Keeps a repository-scoped local Kanban available when Hermes is disconnected, with To do, In progress, Review, and Done lanes.
+- Scrolls long Kanban lanes independently while keeping their headers visible.
+- Selects and archives multiple local cards or eligible Hermes tasks at once. Local archived cards retain their conversations and can be restored; active runs cannot be archived.
 - Routes local cards through reusable Codex or Claude Code execution profiles and streams normalized agent messages and activity back into the card drawer.
 - Binds local cards to isolated worktrees or explicitly attached existing work, and blocks simultaneous writable runs in the same worktree.
 - Opens a local card's changes for review and sends inline feedback to its existing agent conversation. Successful turns move the card to Review; Done stays manual.
+- Returns from code review to the originating local card or Hermes task, preserving the board and lane scroll positions during the session.
 - Separates each new card's destination from its executor: Patchdeck can own it locally, or Hermes can own it on a named board with a Hermes profile or dispatcher assignment.
-- Navigates the Local Board, every named Hermes board, a repository-scoped projection, and a federated All Work projection without copying source records.
+- Separates Work's repository scope, Local/Hermes source, Board/List view, and workflow filters without copying source records.
+- Offers explicit Create card and Create & run actions. Hermes ideas can be captured in triage, with optional task settings under Advanced.
 - Sends a local card to Hermes only through an explicit handoff that preserves the local card and its conversation.
 - Opens a global Settings panel for coding-agent connections, Hermes orchestration, execution profiles, safety boundaries, and build information.
 - Renders Hermes' canonical Kanban lanes, boards, profiles, cards, Markdown task content, task details, comments, events, runs, and bounded worker logs.

@@ -22,6 +22,9 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-lineca
 
 .app-shell, .welcome-shell { height: 100vh; display: flex; flex-direction: column; background: var(--bg); }
 .project-stack { position: relative; min-height: 0; flex: 1; }
+.review-navigation { flex: 0 0 auto; display: flex; gap: 4px; padding: 7px 16px; border-bottom: 1px solid var(--border); background: var(--surface-1); }
+.review-navigation button { padding: 5px 12px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; font-size: var(--text-sm); }
+.review-navigation button[aria-pressed="true"] { border-color: var(--border); background: var(--inset); color: var(--text); }
 .project-pane { height: 100%; display: flex; flex-direction: column; }
 .project-pane[hidden] { display: none; }
 /* The window uses a macOS overlay title bar: the header doubles as the
@@ -266,10 +269,10 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-lineca
 .board-create-button { height: 32px; padding: 0 14px; font-size: var(--text-sm); }
 .board-error { margin: 10px 18px 0; padding: 9px 11px; border: 1px solid var(--danger-border); border-radius: 8px; background: var(--danger-surface); color: var(--danger-text); font-size: var(--text-sm); }
 .board-loading { flex: 1; display: grid; place-items: center; color: var(--muted); font-size: var(--text-md); }
-.kanban-scroll { min-width: 0; min-height: 0; flex: 1; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
-.kanban-columns { min-width: max-content; min-height: 100%; display: flex; align-items: stretch; gap: 14px; padding: 16px 18px 24px; }
-.kanban-column { width: 292px; min-height: 0; display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 13px; background: var(--sidebar-material); }
-.kanban-column > header { height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 11px; border-bottom: 1px solid var(--border); color: var(--text-secondary); }
+.kanban-scroll { min-width: 0; min-height: 0; flex: 1; overflow-x: auto; overflow-y: hidden; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.kanban-columns { min-width: max-content; height: 100%; display: flex; align-items: stretch; gap: 14px; padding: 16px 18px 24px; }
+.kanban-column { width: 292px; min-height: 0; overflow: hidden; display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 13px; background: var(--sidebar-material); }
+.kanban-column > header { height: 36px; flex: 0 0 36px; display: flex; align-items: center; gap: 8px; padding: 0 11px; border-bottom: 1px solid var(--border); color: var(--text-secondary); }
 .kanban-column > header strong { flex: 1; font-size: var(--text-sm); }
 .lane-count { min-width: 20px; padding: 2px 6px; border-radius: 9px; background: var(--surface-hover); color: var(--faint); font-size: var(--text-xs); text-align: center; }
 .lane-dot { width: 8px; height: 8px; border: 2px solid currentColor; border-radius: 50%; color: var(--muted); }
@@ -279,7 +282,7 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-lineca
 .lane-in_progress .lane-dot { color: var(--success); }
 .lane-blocked .lane-dot { color: var(--danger); }
 .lane-review .lane-dot { color: var(--warning); }
-.kanban-card-list { min-height: 90px; display: flex; flex-direction: column; gap: 8px; padding: 8px; }
+.kanban-card-list { min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; display: flex; flex-direction: column; gap: 8px; padding: 8px; }
 .lane-create-button { width: 24px; height: 24px; padding: 0; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--faint); cursor: pointer; font-size: var(--text-heading-md); line-height: 1; }
 .lane-create-button:hover, .lane-create-button:focus-visible { border-color: var(--accent-border); background: var(--accent-soft); color: var(--accent-bright); }
 .kanban-card { width: 100%; display: flex; flex-direction: column; align-items: stretch; gap: 8px; padding: 13px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-1); color: inherit; cursor: pointer; text-align: left; box-shadow: var(--shadow-card); }

@@ -115,6 +115,30 @@ describe("local agent runtime routing", () => {
     await launch;
     expect(store.latestRunForCard(card.id)).toMatchObject({ status: "cancelled", error: null });
   });
+
+  it("does not start or continue agent work after a card is archived", async () => {
+    const store = await import("./store");
+    const runtime = await import("./runtime");
+    await store.initLocalBoardStore();
+    const card = store.createLocalCard({ repositoryPath: "/work/product", title: "Archived work" });
+    store.patchLocalCard(card.id, { workspace: { repositoryPath: "/work/product", worktreePath: "/worktrees/archive", branch: "work/archive", baseBranch: "main" } });
+    const staleCard = store.getLocalBoardDocument().cards[0];
+    store.archiveLocalCards([card.id]);
+
+    await expect(runtime.launchLocalCard(staleCard, profile)).rejects.toThrow("Restore this card before starting agent work.");
+    expect(mocks.start).not.toHaveBeenCalled();
+    expect(store.latestRunForCard(card.id)).toBeNull();
+
+    store.restoreLocalCards([card.id]);
+    const run = store.createLocalRun(card.id, "Initial", profile, "/worktrees/archive", "main");
+    store.patchLocalRun(run.id, { status: "idle", sessionId: "session-archive" });
+    store.archiveLocalCards([card.id]);
+    const beforeContinue = store.latestRunForCard(card.id);
+
+    await expect(runtime.continueLocalRun(beforeContinue!, "/worktrees/archive", "Continue")).rejects.toThrow("Restore this card before continuing agent work.");
+    expect(mocks.start).not.toHaveBeenCalled();
+    expect(store.latestRunForCard(card.id)).toEqual(beforeContinue);
+  });
 });
 
 function rejectable<T>() {

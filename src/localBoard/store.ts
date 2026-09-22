@@ -107,6 +107,35 @@ export function patchLocalCard(cardId: string, patch: Partial<Pick<LocalCard, "t
   });
 }
 
+export function archiveLocalCards(cardIds: Iterable<string>) {
+  const requested = new Set(cardIds);
+  const archivedAt = Date.now();
+  const archivedIds = new Set<string>();
+  const activeCardIds = new Set(document.runs
+    .filter((run) => run.status === "starting" || run.status === "running")
+    .map((run) => run.cardId));
+  const cards = document.cards.map((card) => {
+    if (!requested.has(card.id) || card.archivedAt !== undefined || activeCardIds.has(card.id)) return card;
+    archivedIds.add(card.id);
+    return { ...card, archivedAt, updatedAt: archivedAt };
+  });
+  if (archivedIds.size > 0) updateDocument({ ...document, cards });
+  return [...archivedIds];
+}
+
+export function restoreLocalCards(cardIds: Iterable<string>) {
+  const requested = new Set(cardIds);
+  const restoredAt = Date.now();
+  const restoredIds = new Set<string>();
+  const cards = document.cards.map((card) => {
+    if (!requested.has(card.id) || card.archivedAt === undefined) return card;
+    restoredIds.add(card.id);
+    return { ...card, archivedAt: undefined, updatedAt: restoredAt };
+  });
+  if (restoredIds.size > 0) updateDocument({ ...document, cards });
+  return [...restoredIds];
+}
+
 function sameWorkspace(left: LocalCard["workspace"], right: LocalCard["workspace"]) {
   return left?.repositoryPath === right?.repositoryPath
     && left?.worktreePath === right?.worktreePath
@@ -303,6 +332,7 @@ function sanitizeCard(value: unknown): LocalCard | null {
     hermesHandoffs: Array.isArray(value.hermesHandoffs)
       ? value.hermesHandoffs.map(sanitizeHandoff).filter(isPresent)
       : [],
+    archivedAt: typeof value.archivedAt === "number" ? value.archivedAt : undefined,
     createdAt: numberOrNow(value.createdAt),
     updatedAt: numberOrNow(value.updatedAt),
   };

@@ -12,6 +12,7 @@ import { createCardWorktree } from "../providers/workspaces";
 import { launchLocalCard } from "./runtime";
 import { createLocalCard, deleteLocalCard, patchLocalCard } from "./store";
 import type { LocalCard, LocalLane } from "./types";
+import "./NewWorkComposer.css";
 
 export type NewWorkResult =
   | { source: "local"; card: LocalCard }
@@ -44,6 +45,7 @@ export function NewWorkComposer({
   const titleRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null);
   const taskRequest = useRef(0);
   const submitting = useRef(false);
+  const submitAction = useRef<"create" | "run">("create");
   const onCloseRef = useRef(onClose);
   const returnFocusRef = useRef<HTMLElement | null>(
     typeof document !== "undefined" && document.activeElement instanceof HTMLElement
@@ -67,10 +69,11 @@ export function NewWorkComposer({
   const [goalMode, setGoalMode] = useState(false);
   const [goalMaxTurns, setGoalMaxTurns] = useState("");
   const [runtimes, setRuntimes] = useState<AgentRuntimeStatus[]>([]);
-  const [saving, setSaving] = useState(false);
+  const [savingAction, setSavingAction] = useState<"create" | "run" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const isLocal = destination === "local";
   const destinationBoard = boards.find((board) => `hermes:${board.slug}` === destination) ?? null;
+  const capturesIdea = !isLocal && targetStatus === "triage" && !handoffCard;
 
   useEffect(() => {
     void listAgentRuntimes().then(setRuntimes).catch(() => setRuntimes([]));
@@ -128,11 +131,15 @@ export function NewWorkComposer({
         : preferred?.id ?? "");
       return;
     }
+    if (capturesIdea) {
+      setExecutor("");
+      return;
+    }
     const preferred = hermesProfiles.find((profile) => profile.is_default) ?? hermesProfiles[0];
     setExecutor((current) => current && hermesProfiles.some((profile) => profile.name === current)
       ? current
       : preferred?.name ?? "");
-  }, [destination, hermesProfiles, isLocal, profileDocument.profiles, repositoryPath]);
+  }, [capturesIdea, destination, hermesProfiles, isLocal, profileDocument.profiles, repositoryPath]);
 
   useEffect(() => {
     const request = ++taskRequest.current;
@@ -158,16 +165,22 @@ export function NewWorkComposer({
     () => profileDocument.profiles.find((profile) => profile.id === executor) ?? null,
     [executor, profileDocument.profiles],
   );
-  const canSubmit = !!title.trim()
-    && (isLocal
-      ? !executor || (!!selectedExecutionProfile && isRuntimeReady(runtimes, selectedExecutionProfile))
-      : !!destinationBoard);
+  const canCreate = !!title.trim() && (isLocal || !!destinationBoard);
+  const canRun = isLocal
+    && !!title.trim()
+    && !!selectedExecutionProfile
+    && isRuntimeReady(runtimes, selectedExecutionProfile);
+  const advancedSummary = !isLocal
+    ? hermesAdvancedSummary({ priority, skills, workspaceKind, workspacePath, parent, goalMode, goalMaxTurns })
+    : "";
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!canSubmit || submitting.current) return;
+    const action = isLocal ? submitAction.current : "create";
+    submitAction.current = "create";
+    if (!canCreate || (action === "run" && !canRun) || submitting.current) return;
     submitting.current = true;
-    setSaving(true);
+    setSavingAction(action);
     setError(null);
     try {
       if (isLocal) {
@@ -179,7 +192,7 @@ export function NewWorkComposer({
           executionProfileId: selectedExecutionProfile?.id ?? null,
         });
         try {
-          if (selectedExecutionProfile) {
+          if (action === "run" && selectedExecutionProfile) {
             const info = await openRepository(repositoryPath);
             const baseBranch = info.suggestedBaseBranch ?? "main";
             const workspace = await createCardWorktree({ repositoryPath, cardId: card.id, baseBranch });
@@ -215,107 +228,149 @@ export function NewWorkComposer({
       setError(errorMessage(reason));
     } finally {
       submitting.current = false;
-      setSaving(false);
+      setSavingAction(null);
     }
   }
 
   return (
     <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <form ref={dialogRef} className="task-create-dialog shared-work-composer" role="dialog" aria-modal="true" aria-label={handoffCard ? "Send local card to Hermes" : "Create new work"} onSubmit={submit}>
+      <form ref={dialogRef} className="task-create-dialog shared-work-composer" role="dialog" aria-modal="true" aria-label={handoffCard ? "Send local card to Hermes" : capturesIdea ? "Capture Hermes idea" : "Create new work"} onSubmit={submit}>
         <header>
           <div>
-            <span>{handoffCard ? "Explicit handoff" : "Agent board"}</span>
-            <strong>{handoffCard ? "Send local card to Hermes" : "New work"}</strong>
+            <span>{handoffCard ? "Explicit handoff" : capturesIdea ? "Hermes triage" : "Work"}</span>
+            <strong>{handoffCard ? "Send local card to Hermes" : capturesIdea ? "Capture idea" : "New work"}</strong>
           </div>
           <button type="button" className="plain-close" onClick={onClose} aria-label="Close work form">×</button>
         </header>
-        {handoffCard && <p className="handoff-context">Hermes receives a new task. The local card, its lane, and its agent conversation stay unchanged.</p>}
-        <div className="new-work-routing">
-          <label>Destination
-            <select aria-label="Destination" value={destination} onChange={(event) => setDestination(event.target.value)}>
-              {!handoffCard && <option value="local">Local Board</option>}
-              {boards.map((board) => <option key={board.slug} value={`hermes:${board.slug}`}>Hermes · {board.name || board.slug}</option>)}
-            </select>
-          </label>
-          <label>Executor
-            <select aria-label="Executor" value={executor} onChange={(event) => setExecutor(event.target.value)}>
-              {isLocal ? (
-                <>
-                  <option value="">No agent yet</option>
-                  {profileDocument.profiles.map((profile) => <option key={profile.id} value={profile.id} disabled={!isRuntimeReady(runtimes, profile)}>{profile.name}{isRuntimeReady(runtimes, profile) ? "" : " (unavailable)"}</option>)}
-                </>
-              ) : (
-                <>
-                  <option value="">Dispatcher picks</option>
-                  {hermesProfiles.map((profile) => <option key={profile.name} value={profile.name}>{profile.name}{profile.is_default ? " · default" : ""}</option>)}
-                </>
-              )}
-            </select>
-          </label>
-        </div>
-        <p className="new-work-context">
-          {isLocal
-            ? "Patchdeck owns this card. Selecting an execution profile starts its agent conversation immediately."
-            : `Hermes owns this task on ${destinationBoard?.name || destinationBoard?.slug || "the selected board"}. Updates remain in Hermes.`}
-        </p>
-        <label>Title
-          {isLocal ? (
-            <input ref={titleRef as RefObject<HTMLInputElement>} value={title} onChange={(event) => setTitle(event.target.value)} required maxLength={200} />
-          ) : (
-            <textarea
-              ref={titleRef as RefObject<HTMLTextAreaElement>}
-              value={title}
-              onChange={(event) => setTitle(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey) {
-                  event.preventDefault();
-                  event.currentTarget.form?.requestSubmit();
-                }
-              }}
-              required
-              maxLength={200}
-              rows={3}
-              placeholder={targetStatus === "triage" ? "Rough idea — AI will spec it…" : "New task title…"}
-            />
-          )}
-        </label>
-        <label>Instructions<textarea value={body} onChange={(event) => setBody(event.target.value)} rows={8} placeholder="Describe the outcome, constraints, and checks…" /></label>
-        {!isLocal && (
-          <div className="hermes-work-fields">
-            <div className="form-grid task-routing-grid">
-              <label>Priority<input aria-label="Priority" type="number" value={priority} onChange={(event) => setPriority(event.target.value)} /></label>
-              <label>Skills <span>(optional, comma-separated)</span><input aria-label="Skills" value={skills} onChange={(event) => setSkills(event.target.value)} placeholder="testing, code-review" /></label>
-            </div>
-            <label>Workspace
-              <div className="workspace-fields">
-                <select aria-label="Workspace" value={workspaceKind} onChange={(event) => setWorkspaceKind(event.target.value as CreateHermesTask["workspace_kind"])}>
-                  <option value="scratch">Temporary — deleted on completion</option>
-                  <option value="worktree">Git worktree — preserved</option>
-                  <option value="dir">Directory — preserved</option>
-                </select>
-                {workspaceKind !== "scratch" && <input aria-label="Workspace path" value={workspacePath} onChange={(event) => setWorkspacePath(event.target.value)} placeholder="Workspace path" />}
-              </div>
-            </label>
-            <label>Parent task <span>(child stays blocked until the parent is done)</span>
-              <select aria-label="Parent task" value={parent} onChange={(event) => setParent(event.target.value)}>
-                <option value="">— no parent —</option>
-                {parentTasks.map((task) => <option key={task.id} value={task.id}>{task.id} — {task.title}</option>)}
+        <div className="new-work-body">
+          {handoffCard && <p className="handoff-context">Hermes receives a new task. The local card, its lane, and its agent conversation stay unchanged.</p>}
+          <div className="new-work-routing">
+            <label>Destination
+              <select aria-label="Destination" value={destination} onChange={(event) => setDestination(event.target.value)}>
+                {!handoffCard && <option value="local">Local Board</option>}
+                {boards.map((board) => <option key={board.slug} value={`hermes:${board.slug}`}>Hermes · {board.name || board.slug}</option>)}
               </select>
             </label>
-            <div className="goal-mode-row">
-              <label className="goal-mode-check"><input type="checkbox" checked={goalMode} onChange={(event) => setGoalMode(event.target.checked)} aria-label="Goal mode" />Goal mode</label>
-              {goalMode && <input aria-label="Goal max turns" type="number" min="1" value={goalMaxTurns} onChange={(event) => setGoalMaxTurns(event.target.value)} placeholder="max turns (default 20)" />}
-            </div>
+            <label>Executor
+              <select aria-label="Executor" value={executor} onChange={(event) => setExecutor(event.target.value)}>
+                {isLocal ? (
+                  <>
+                    <option value="">No agent yet</option>
+                    {profileDocument.profiles.map((profile) => <option key={profile.id} value={profile.id} disabled={!isRuntimeReady(runtimes, profile)}>{profile.name}{isRuntimeReady(runtimes, profile) ? "" : " (unavailable)"}</option>)}
+                  </>
+                ) : (
+                  <>
+                    <option value="">Dispatcher picks</option>
+                    {hermesProfiles.map((profile) => <option key={profile.name} value={profile.name}>{profile.name}{profile.is_default ? " · default" : ""}</option>)}
+                  </>
+                )}
+              </select>
+            </label>
           </div>
-        )}
-        {error && <p className="form-error" role="alert">{error}</p>}
+          <p className="new-work-context">
+            {isLocal
+              ? "Patchdeck owns this card. Create it now, or choose a ready execution profile and start it in an isolated workspace."
+              : capturesIdea
+                ? `Save this idea to ${destinationBoard?.name || destinationBoard?.slug || "Hermes"} Triage for refinement before execution.`
+                : `Hermes owns this task on ${destinationBoard?.name || destinationBoard?.slug || "the selected board"}. Updates remain in Hermes.`}
+          </p>
+          <label>Title
+            {isLocal ? (
+              <input ref={titleRef as RefObject<HTMLInputElement>} value={title} onChange={(event) => setTitle(event.target.value)} onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  submitAction.current = "create";
+                  event.currentTarget.form?.requestSubmit();
+                }
+              }} required maxLength={200} />
+            ) : (
+              <textarea
+                ref={titleRef as RefObject<HTMLTextAreaElement>}
+                value={title}
+                onChange={(event) => setTitle(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    event.currentTarget.form?.requestSubmit();
+                  }
+                }}
+                required
+                maxLength={200}
+                rows={3}
+                placeholder={targetStatus === "triage" ? "Rough idea — AI will spec it…" : "New task title…"}
+              />
+            )}
+          </label>
+          <label>Instructions<textarea value={body} onChange={(event) => setBody(event.target.value)} rows={8} placeholder="Describe the outcome, constraints, and checks…" /></label>
+          {!isLocal && (
+            <details className="new-work-advanced">
+              <summary><span>Advanced</span><small>{advancedSummary}</small></summary>
+              <div className="hermes-work-fields">
+                <div className="form-grid task-routing-grid">
+                  <label>Priority<input aria-label="Priority" type="number" value={priority} onChange={(event) => setPriority(event.target.value)} /></label>
+                  <label>Skills <span>(optional, comma-separated)</span><input aria-label="Skills" value={skills} onChange={(event) => setSkills(event.target.value)} placeholder="testing, code-review" /></label>
+                </div>
+                <label>Workspace
+                  <div className="workspace-fields">
+                    <select aria-label="Workspace" value={workspaceKind} onChange={(event) => setWorkspaceKind(event.target.value as CreateHermesTask["workspace_kind"])}>
+                      <option value="scratch">Temporary — deleted on completion</option>
+                      <option value="worktree">Git worktree — preserved</option>
+                      <option value="dir">Directory — preserved</option>
+                    </select>
+                    {workspaceKind !== "scratch" && <input aria-label="Workspace path" value={workspacePath} onChange={(event) => setWorkspacePath(event.target.value)} placeholder="Workspace path" />}
+                  </div>
+                </label>
+                <label>Parent task <span>(child stays blocked until the parent is done)</span>
+                  <select aria-label="Parent task" value={parent} onChange={(event) => setParent(event.target.value)}>
+                    <option value="">— no parent —</option>
+                    {parentTasks.map((task) => <option key={task.id} value={task.id}>{task.id} — {task.title}</option>)}
+                  </select>
+                </label>
+                <div className="goal-mode-row">
+                  <label className="goal-mode-check"><input type="checkbox" checked={goalMode} onChange={(event) => setGoalMode(event.target.checked)} aria-label="Goal mode" />Goal mode</label>
+                  {goalMode && <input aria-label="Goal max turns" type="number" min="1" value={goalMaxTurns} onChange={(event) => setGoalMaxTurns(event.target.value)} placeholder="max turns (default 20)" />}
+                </div>
+              </div>
+            </details>
+          )}
+          {error && <p className="form-error" role="alert">{error}</p>}
+        </div>
         <footer>
           <button type="button" className="secondary-button" onClick={onClose}>Cancel</button>
-          <button className="primary-button" disabled={saving || !canSubmit}>{saving ? "Creating…" : handoffCard ? "Confirm send" : isLocal && selectedExecutionProfile ? "Create & run" : "Create work"}</button>
+          {isLocal && !handoffCard ? (
+            <>
+              <button type="submit" className="secondary-button" disabled={savingAction !== null || !canCreate} onClick={() => { submitAction.current = "create"; }}>{savingAction === "create" ? "Creating…" : "Create card"}</button>
+              <button type="submit" className="primary-button" disabled={savingAction !== null || !canRun} onClick={() => { submitAction.current = "run"; }}>{savingAction === "run" ? "Preparing & running…" : "Create & run"}</button>
+            </>
+          ) : (
+            <button className="primary-button" disabled={savingAction !== null || !canCreate}>{savingAction ? "Creating…" : handoffCard ? "Confirm send" : capturesIdea ? "Capture idea" : "Create work"}</button>
+          )}
         </footer>
       </form>
     </div>
   );
+}
+
+function hermesAdvancedSummary({ priority, skills, workspaceKind, workspacePath, parent, goalMode, goalMaxTurns }: {
+  priority: string;
+  skills: string;
+  workspaceKind: CreateHermesTask["workspace_kind"];
+  workspacePath: string;
+  parent: string;
+  goalMode: boolean;
+  goalMaxTurns: string;
+}) {
+  const skillCount = skills.split(",").map((skill) => skill.trim()).filter(Boolean).length;
+  const workspace = workspaceKind === "scratch"
+    ? "temporary workspace"
+    : `${workspaceKind === "worktree" ? "worktree" : "directory"}${workspacePath.trim() ? ` · ${workspacePath.trim()}` : ""}`;
+  return [
+    `Priority ${Number(priority) || 0}`,
+    skillCount ? `${skillCount} skill${skillCount === 1 ? "" : "s"}` : "default skills",
+    workspace,
+    parent ? `parent ${parent}` : "no parent",
+    goalMode ? `goal mode${Number(goalMaxTurns) > 0 ? ` · ${Number(goalMaxTurns)} turns` : ""}` : "goal mode off",
+  ].join(" · ");
 }
 
 function isRuntimeReady(runtimes: AgentRuntimeStatus[], profile: ExecutionProfile) {
@@ -324,8 +379,11 @@ function isRuntimeReady(runtimes: AgentRuntimeStatus[], profile: ExecutionProfil
 
 function focusableElements(container: HTMLElement) {
   return Array.from(container.querySelectorAll<HTMLElement>(
-    'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-  ));
+    'button:not([disabled]), summary, [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+  )).filter((element) => {
+    const closedDetails = element.closest("details:not([open])");
+    return !closedDetails || element.tagName === "SUMMARY";
+  });
 }
 
 export function hermesWorkspace(board: HermesBoardMeta, repositoryPath: string): {

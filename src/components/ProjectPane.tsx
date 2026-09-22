@@ -27,6 +27,12 @@ import { DiffSkeleton, ErrorBanner, FileListSkeleton, Spinner } from "./ui";
 // keeps it out of the initial bundle.
 const DiffView = lazy(() => import("./DiffView").then((module) => ({ default: module.DiffView })));
 
+export interface WorkingTreeReviewRequest {
+  id: number;
+  repositoryPath: string;
+  baseBranch: string;
+}
+
 export function ProjectLoadingPane({
   tab,
   active,
@@ -70,7 +76,9 @@ export function ProjectPane({
   reviewTarget,
   onReviewTargetUpdated,
   agentAttached,
-  onReturnToCard,
+  onReturnToReviewTarget,
+  workingTreeRequest,
+  onWorkingTreeRequestConsumed,
 }: {
   id: string;
   active: boolean;
@@ -79,13 +87,17 @@ export function ProjectPane({
   reviewTarget: ReviewTarget | null;
   onReviewTargetUpdated: (target: ReviewTarget | null) => void;
   agentAttached: boolean;
-  onReturnToCard?: (cardId: string, repositoryPath: string) => void;
+  onReturnToReviewTarget?: (target: ReviewTarget) => void;
+  workingTreeRequest?: WorkingTreeReviewRequest | null;
+  onWorkingTreeRequestConsumed?: (id: number) => void;
 }) {
   const storedProjectView = useMemo(() => readProjectView(initialRepository.path), [initialRepository.path]);
   const initialBranches = initialProjectBranches(initialRepository, storedProjectView);
   const [repository, setRepository] = useState(initialRepository);
-  const [baseBranch, setBaseBranch] = useState(reviewTarget?.source === "local" && reviewTarget.repositoryPath === initialRepository.path ? reviewTarget.baseBranch ?? initialBranches.base : initialBranches.base);
-  const [comparisonMode, setComparisonMode] = useState<ComparisonMode>(reviewTarget?.source === "local" && reviewTarget.repositoryPath === initialRepository.path ? "workingTree" : storedProjectView?.mode ?? "branch");
+  const initialWorktreeRequest = workingTreeRequest?.repositoryPath === initialRepository.path ? workingTreeRequest : null;
+  const reviewingInitialRepository = !!initialWorktreeRequest || reviewTarget?.repositoryPath === initialRepository.path;
+  const [baseBranch, setBaseBranch] = useState(initialWorktreeRequest?.baseBranch ?? (reviewingInitialRepository ? reviewTarget?.baseBranch ?? initialBranches.base : initialBranches.base));
+  const [comparisonMode, setComparisonMode] = useState<ComparisonMode>(reviewingInitialRepository ? "workingTree" : storedProjectView?.mode ?? "branch");
   const [liveRefresh, setLiveRefresh] = useState(0);
   const lastLiveRefresh = useRef(0);
   const [livePaused, setLivePaused] = useState(false);
@@ -289,10 +301,19 @@ export function ProjectPane({
   }, [hasActivated, repository, baseBranch, compareBranch, comparisonMode]);
 
   useEffect(() => {
-    if (reviewTarget?.source !== "local" || reviewTarget.repositoryPath !== repository.path) return;
+    if (!reviewTarget || reviewTarget.repositoryPath !== repository.path) return;
     setComparisonMode("workingTree");
-    if (reviewTarget.baseBranch) setBaseBranch(reviewTarget.baseBranch);
-  }, [reviewTarget?.source, reviewTarget?.taskId, reviewTarget?.repositoryPath, reviewTarget?.baseBranch, repository.path]);
+    if (reviewTarget.baseBranch && repository.branches.some((branch) => branch.name === reviewTarget.baseBranch)) {
+      setBaseBranch(reviewTarget.baseBranch);
+    }
+  }, [reviewTarget?.source, reviewTarget?.taskId, reviewTarget?.repositoryPath, reviewTarget?.baseBranch, repository]);
+
+  useEffect(() => {
+    if (!workingTreeRequest || workingTreeRequest.repositoryPath !== repository.path) return;
+    setComparisonMode("workingTree");
+    setBaseBranch(workingTreeRequest.baseBranch);
+    onWorkingTreeRequestConsumed?.(workingTreeRequest.id);
+  }, [workingTreeRequest?.id, repository.path]);
 
   useEffect(() => {
     if (comparisonMode !== "workingTree" || !active || !baseBranch) return;
@@ -784,14 +805,11 @@ export function ProjectPane({
         {comparisonMode === "workingTree" ? <button className={`live-review-toggle${livePaused ? "" : " active"}`} aria-pressed={!livePaused} title="Pause or resume live file updates" onClick={() => setLivePaused((current) => !current)}>{livePaused ? "Paused" : "Live"}</button> : !agentAttached && !projectReviewTarget && <span className="readonly-badge"><LockIcon /> Review-only</span>}
       </section>
 
-      {projectReviewTarget?.source === "local" && <div className="local-review-context">
+      {projectReviewTarget && <div className="local-review-context">
         <span>Reviewing <strong>{projectReviewTarget.title}</strong></span>
         <span>{comparisonMode === "workingTree" ? "Includes committed and uncommitted work" : "Committed changes only"}</span>
-        {onReturnToCard && <button onClick={() => {
-          const card = getLocalBoardDocument().cards.find((candidate) => candidate.id === projectReviewTarget.taskId);
-          if (card) onReturnToCard(card.id, card.repositoryPath);
-        }}>Back to card</button>}
-        <button aria-label="Close card review" onClick={() => onReviewTargetUpdated(null)}>×</button>
+        {onReturnToReviewTarget && <button onClick={() => onReturnToReviewTarget(projectReviewTarget)}>Back to {projectReviewTarget.source === "local" ? "card" : "task"}</button>}
+        <button aria-label={`Close ${projectReviewTarget.source === "local" ? "card" : "task"} review`} onClick={() => onReviewTargetUpdated(null)}>×</button>
       </div>}
       {error && <div className="workspace-error"><ErrorBanner message={error} /></div>}
 

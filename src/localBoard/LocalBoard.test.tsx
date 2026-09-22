@@ -3,7 +3,7 @@ import "@testing-library/jest-dom/vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LocalBoard } from "./LocalBoard";
 import { resetExecutionProfiles } from "../providers/profiles";
-import { createLocalCard, patchLocalCard, resetLocalBoardStore } from "./store";
+import { archiveLocalCards, createLocalCard, createLocalRun, patchLocalCard, resetLocalBoardStore } from "./store";
 import type { AgentRuntimeEvent } from "../providers/types";
 import { applyAgentRuntimeEvent } from "./runtime";
 
@@ -143,5 +143,86 @@ describe("local board", () => {
     await waitFor(() => expect(runButton).toBeEnabled());
     fireEvent.click(runButton);
     await waitFor(() => expect(mocks.start).toHaveBeenCalledWith(expect.objectContaining({ repositoryPath: "/worktrees/existing" })));
+  });
+
+  it("selects, archives, and restores repository-scoped cards", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    createLocalCard({ repositoryPath: "/work/product", title: "Archive one", lane: "done" });
+    createLocalCard({ repositoryPath: "/work/product", title: "Archive two", lane: "done" });
+    createLocalCard({ repositoryPath: "/work/other", title: "Other repository", lane: "done" });
+    render(<LocalBoard repositoryPath="/work/product" />);
+    await screen.findByText("2 agents ready");
+
+    fireEvent.click(screen.getByRole("button", { name: "Select cards" }));
+    fireEvent.click(screen.getByRole("button", { name: "Select all archivable cards in Done" }));
+    expect(screen.getByText("2 selected")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Archive selected" }));
+
+    expect(window.confirm).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("Archive one")).not.toBeInTheDocument();
+    expect(screen.queryByText("Archive two")).not.toBeInTheDocument();
+    expect(screen.queryByText("Other repository")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Archived"));
+    expect(screen.getByText("Archive one")).toBeInTheDocument();
+    expect(screen.getByText("Archive two")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Select to restore" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select local card Archive one" }));
+    fireEvent.click(screen.getByRole("button", { name: "Restore selected" }));
+    expect(screen.queryByText("Archive one")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Archived"));
+    expect(screen.getByText("Archive one")).toBeInTheDocument();
+  });
+
+  it("opens an archived initial card and does not allow active runs to be selected", async () => {
+    const archived = createLocalCard({ repositoryPath: "/work/product", title: "Archived history" });
+    archiveLocalCards([archived.id]);
+    const active = createLocalCard({ repositoryPath: "/work/product", title: "Agent is running", lane: "in_progress" });
+    createLocalRun(active.id, "Run", {
+      id: "codex-workspace", name: "Codex", runtimeId: "codex", model: "", sandbox: "workspaceWrite", instructions: "", builtIn: true,
+    });
+    const opened = vi.fn();
+    const { rerender } = render(<LocalBoard repositoryPath="/work/product" initialCardId={archived.id} onInitialCardOpened={opened} />);
+    await screen.findByText("2 agents ready");
+
+    expect(screen.getByLabelText("Archived")).toBeChecked();
+    expect(screen.getByRole("complementary", { name: "Archived history card details" })).toBeInTheDocument();
+    expect(opened).toHaveBeenCalledTimes(1);
+    rerender(<LocalBoard repositoryPath="/work/product" initialCardId={archived.id} onInitialCardOpened={opened} />);
+    expect(opened).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByLabelText("Archived"));
+    fireEvent.click(screen.getByRole("button", { name: "Select cards" }));
+    expect(screen.getByRole("checkbox", { name: "Select local card Agent is running" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Agent is running/ })).toBeDisabled();
+  });
+
+  it("filters and searches local work across repositories", async () => {
+    createLocalCard({ repositoryPath: "/work/product", title: "Finished product work", lane: "done" });
+    createLocalCard({ repositoryPath: "/work/other", title: "Finished other work", lane: "done" });
+    createLocalCard({ repositoryPath: "/work/product", title: "Pending product work", lane: "todo" });
+    render(<LocalBoard repositoryPath="/work/product" allRepositories workFilter="completed" query="other" />);
+    await screen.findByText("2 agents ready");
+
+    expect(screen.getByText("Finished other work")).toBeInTheDocument();
+    expect(screen.queryByText("Finished product work")).not.toBeInTheDocument();
+    expect(screen.queryByText("Pending product work")).not.toBeInTheDocument();
+  });
+
+  it("includes cards from every checkout in the current repository scope", async () => {
+    createLocalCard({ repositoryPath: "/work/product", title: "Main checkout card" });
+    createLocalCard({ repositoryPath: "/worktrees/product-card/", title: "Worktree card" });
+    createLocalCard({ repositoryPath: "/work/other", title: "Unrelated card" });
+    render(
+      <LocalBoard
+        repositoryPath="/worktrees/product-card"
+        scopeRepositoryPaths={["/work/product/", "/worktrees/product-card"]}
+      />,
+    );
+    await screen.findByText("2 agents ready");
+
+    expect(screen.getByText("Main checkout card")).toBeInTheDocument();
+    expect(screen.getByText("Worktree card")).toBeInTheDocument();
+    expect(screen.queryByText("Unrelated card")).not.toBeInTheDocument();
   });
 });

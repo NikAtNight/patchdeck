@@ -13,7 +13,7 @@ describe("local board theme contract", () => {
 
   it("uses the filled-accent foreground token for the navigator action", () => {
     const boardStyles = readFileSync("src/localBoard/boards.css", "utf8");
-    const actionRules = boardStyles.match(/\.board-navigator \.board-navigator-create[^}]*\{[^}]+\}/g)?.join("\n") ?? "";
+    const actionRules = boardStyles.match(/\.work-navigator \.board-navigator-create[^}]*\{[^}]+\}/g)?.join("\n") ?? "";
 
     expect(actionRules).toContain("var(--accent-fill-text)");
     expect(actionRules).not.toMatch(/color:\s*white\b/i);

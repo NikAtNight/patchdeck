@@ -18,11 +18,15 @@ const LANE_LABELS: Record<LocalLane, string> = {
 type RepositoryWorkItem =
   | { source: "local"; lane: LocalLane; sourceStatus: string; id: string; title: string; summary: string; card: LocalCard }
   | { source: "hermes"; lane: LocalLane; sourceStatus: string; id: string; title: string; summary: string; board: HermesBoardMeta; task: HermesTask };
+type WorkFilter = "all" | "attention" | "active" | "completed" | "archived";
 
-export function RepositoryBoard({ repositoryPath, boards, hermesConnected, onOpenLocal, onOpenHermes }: {
+export function RepositoryBoard({ repositoryPath, repositoryPaths, boards, hermesConnected, filter = "all", query = "", onOpenLocal, onOpenHermes }: {
   repositoryPath?: string;
+  repositoryPaths?: string[];
   boards: HermesBoardMeta[];
   hermesConnected: boolean;
+  filter?: WorkFilter;
+  query?: string;
   onOpenLocal: (cardId: string, repositoryPath: string) => void;
   onOpenHermes: (board: string, taskId: string) => void;
 }) {
@@ -37,7 +41,7 @@ export function RepositoryBoard({ repositoryPath, boards, hermesConnected, onOpe
     const current = ++request.current;
     if (!quiet) setLoading(true);
     try {
-      const responses = await Promise.allSettled(boards.map(async (board) => [board.slug, await getHermesBoard(board.slug, false)] as const));
+      const responses = await Promise.allSettled(boards.map(async (board) => [board.slug, await getHermesBoard(board.slug, filter === "archived")] as const));
       if (current === request.current) {
         const entries = responses.flatMap((response) => response.status === "fulfilled" ? [response.value] : []);
         const failed = responses.find((response): response is PromiseRejectedResult => response.status === "rejected");
@@ -49,7 +53,7 @@ export function RepositoryBoard({ repositoryPath, boards, hermesConnected, onOpe
     } finally {
       if (!quiet && current === request.current) setLoading(false);
     }
-  }, [boards, hermesConnected]);
+  }, [boards, filter, hermesConnected]);
 
   useEffect(() => {
     if (!hermesConnected) {
@@ -65,8 +69,8 @@ export function RepositoryBoard({ repositoryPath, boards, hermesConnected, onOpe
   }, [hermesConnected, load]);
 
   const items = useMemo(
-    () => normalizeFederatedWork(repositoryPath ?? null, local.cards, hermesConnected ? boards : [], hermesConnected ? hermesBoards : {}),
-    [boards, hermesBoards, hermesConnected, local.cards, repositoryPath],
+    () => normalizeFederatedWork(repositoryPath ?? null, local.cards, hermesConnected ? boards : [], hermesConnected ? hermesBoards : {}, { filter, query, repositoryPaths }),
+    [boards, filter, hermesBoards, hermesConnected, local.cards, query, repositoryPath, repositoryPaths],
   );
 
   return (
@@ -128,14 +132,17 @@ export function normalizeFederatedWork(
   localCards: LocalCard[],
   boardMetadata: HermesBoardMeta[],
   hermesBoards: Record<string, HermesBoard>,
+  options: { filter?: WorkFilter; query?: string; repositoryPaths?: string[] } = {},
 ): RepositoryWorkItem[] {
   const repository = repositoryPath === null ? null : normalizePath(repositoryPath);
+  const repositories = repository === null ? null : new Set((options.repositoryPaths ?? [repository]).map(normalizePath));
   const local: RepositoryWorkItem[] = localCards
-    .filter((card) => repository === null || normalizePath(card.repositoryPath) === repository)
-    .map((card) => ({ source: "local", lane: card.lane, sourceStatus: card.lane, id: card.id, title: card.title, summary: card.body, card }));
+    .filter((card) => repositories === null || repositories.has(normalizePath(card.repositoryPath)))
+    .map((card) => ({ source: "local" as const, lane: card.lane, sourceStatus: card.archivedAt === undefined ? card.lane : "archived", id: card.id, title: card.title, summary: card.body, card }))
+    .filter((item) => matchesWorkItem(item, options.filter ?? "all", options.query ?? ""));
   const hermes = boardMetadata.flatMap((metadata): RepositoryWorkItem[] => (
     hermesBoards[metadata.slug]?.columns.flatMap((column) => column.tasks
-      .filter((task) => repository === null || normalizePath(task.workspace_path ?? "") === repository)
+      .filter((task) => repositories === null || repositories.has(normalizePath(task.workspace_path ?? "")))
       .map((task) => ({
         source: "hermes" as const,
         lane: hermesLane(task.status),
@@ -145,9 +152,30 @@ export function normalizeFederatedWork(
         summary: task.latest_summary ?? task.body ?? "",
         board: metadata,
         task,
-      }))) ?? []
+      }))
+      .filter((item) => matchesWorkItem(item, options.filter ?? "all", options.query ?? ""))) ?? []
   ));
   return [...local, ...hermes];
+}
+
+function matchesWorkItem(item: RepositoryWorkItem, filter: WorkFilter, query: string) {
+  const archived = item.sourceStatus === "archived";
+  if (filter === "archived") {
+    if (!archived) return false;
+  } else if (archived) {
+    return false;
+  } else if (filter === "attention") {
+    if (item.source === "local") {
+      if (item.sourceStatus !== "review" && latestRunForCard(item.id)?.status !== "failed") return false;
+    } else if (item.sourceStatus !== "blocked" && item.sourceStatus !== "review") return false;
+  } else if (filter === "active") {
+    if (item.source === "local" ? item.sourceStatus !== "in_progress" : !["scheduled", "ready", "running"].includes(item.sourceStatus)) return false;
+  } else if (filter === "completed" && item.sourceStatus !== "done") {
+    return false;
+  }
+  const needle = query.trim().toLocaleLowerCase();
+  const repository = item.source === "local" ? item.card.repositoryPath : item.task.workspace_path ?? "";
+  return !needle || [item.id, item.title, item.summary, repository].some((value) => value.toLocaleLowerCase().includes(needle));
 }
 
 function hermesLane(status: string): LocalLane {

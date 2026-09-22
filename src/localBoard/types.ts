@@ -21,6 +21,7 @@ export interface LocalCard {
   executionProfileId: string | null;
   workspace?: CardWorkspace;
   hermesHandoffs: LocalCardHandoff[];
+  archivedAt?: number;
   createdAt: number;
   updatedAt: number;
 }

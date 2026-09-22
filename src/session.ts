@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { RepositoryInfo } from "./types";
 
 export type AppSurface = "review" | "agent";
+export type ReviewScreen = "worktrees" | "changes";
 
 export interface ProjectTab {
   id: string;
@@ -74,6 +75,14 @@ export function readAppSurface(): AppSurface {
 
 export function writeAppSurface(surface: AppSurface) {
   localStorage.setItem(APP_SURFACE_KEY, surface);
+}
+
+export function readReviewScreen(): ReviewScreen {
+  return localStorage.getItem("patchdeck.review-screen") === "changes" ? "changes" : "worktrees";
+}
+
+export function writeReviewScreen(screen: ReviewScreen) {
+  localStorage.setItem("patchdeck.review-screen", screen);
 }
 
 export function readProjectView(path: string): ProjectView | null {

@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HermesBoardsResponse, HermesProfilesResponse, HermesSessionController } from "../hermes/types";
 import { resetExecutionProfiles } from "../providers/profiles";
 import { AgentWorkspace } from "./AgentWorkspace";
-import { createLocalCard, getLocalBoardDocument, resetLocalBoardStore } from "./store";
+import { archiveLocalCards, createLocalCard, getLocalBoardDocument, resetLocalBoardStore } from "./store";
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
@@ -102,18 +102,91 @@ describe("unified agent workspace", () => {
 
   afterEach(cleanup);
 
-  it("navigates local, repository, and every named Hermes board", async () => {
+  it("navigates repository scope, source, and view independently", async () => {
     render(<AgentWorkspace hermes={session} repositoryPath="/work/product" onReviewTask={vi.fn()} />);
-    const navigator = screen.getByRole("navigation", { name: "Board navigator" });
+    const navigator = screen.getByRole("navigation", { name: "Work navigation" });
 
-    expect(within(navigator).getByRole("button", { name: "Local Board" })).toBeInTheDocument();
-    expect(await within(navigator).findByRole("button", { name: "This Repository" })).toBeInTheDocument();
-    expect(within(navigator).getByRole("button", { name: "All Work" })).toBeInTheDocument();
-    expect(within(navigator).getByRole("button", { name: "Hermes · SXCL" })).toBeInTheDocument();
-    expect(within(navigator).getByRole("button", { name: "Hermes · Olive" })).toBeInTheDocument();
+    expect(within(navigator).getByRole("button", { name: "Current" })).toHaveAttribute("aria-pressed", "true");
+    expect(within(navigator).getByRole("option", { name: "Local" })).toBeInTheDocument();
+    expect(await within(navigator).findByRole("option", { name: "Hermes · SXCL" })).toBeInTheDocument();
+    expect(within(navigator).getByRole("option", { name: "Hermes · Olive" })).toBeInTheDocument();
 
-    fireEvent.click(within(navigator).getByRole("button", { name: "Hermes · Olive" }));
+    fireEvent.change(within(navigator).getByLabelText("Work source"), { target: { value: "hermes:olive" } });
     expect(await screen.findByText("Hermes source olive")).toBeInTheDocument();
+    fireEvent.click(within(navigator).getByRole("button", { name: "List" }));
+    expect(screen.getByRole("button", { name: "List" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("does not overwrite saved offsets with scroll events produced during restoration", () => {
+    const onViewStateChange = vi.fn();
+    render(
+      <AgentWorkspace
+        hermes={session}
+        repositoryPath="/work/product"
+        viewStates={{
+          "repository:local:board:/work/product": {
+            scrollLeft: 240,
+            scrollTop: 0,
+            laneScrollTops: { "To do cards": 75 },
+          },
+        }}
+        onReviewTask={vi.fn()}
+        onViewStateChange={onViewStateChange}
+      />,
+    );
+
+    const board = screen.getByLabelText("Local Kanban board");
+    fireEvent.scroll(board);
+    expect(onViewStateChange).not.toHaveBeenCalled();
+
+    fireEvent.pointerDown(board);
+    board.scrollLeft = 120;
+    fireEvent.scroll(board);
+    expect(onViewStateChange).toHaveBeenLastCalledWith("repository:local:board:/work/product", expect.objectContaining({ scrollLeft: 120 }));
+  });
+
+  it("restores and reports the full navigation state, including list view", () => {
+    const onNavigationChange = vi.fn();
+    const initialNavigation = { scope: "repository" as const, source: "local" as const, view: "list" as const, filter: "attention" as const, query: "review" };
+    render(<AgentWorkspace hermes={disconnectedSession} repositoryPath="/work/product" initialNavigation={initialNavigation} onNavigationChange={onNavigationChange} onReviewTask={vi.fn()} />);
+
+    expect(screen.getByLabelText("Work source")).toHaveValue("local");
+    expect(screen.getByLabelText("Work filter")).toHaveValue("attention");
+    expect(screen.getByLabelText("Search work")).toHaveValue("review");
+    expect(screen.getByRole("button", { name: "List" })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(screen.getByRole("button", { name: "All" }));
+
+    expect(onNavigationChange).toHaveBeenLastCalledWith({ ...initialNavigation, scope: "all" });
+  });
+
+  it("reveals an archived local card requested after review", async () => {
+    const card = createLocalCard({ repositoryPath: "/work/product", title: "Archived return" });
+    archiveLocalCards([card.id]);
+    const onNavigationChange = vi.fn();
+    render(
+      <AgentWorkspace
+        hermes={disconnectedSession}
+        repositoryPath="/work/product"
+        initialNavigation={{ filter: "active", query: "hidden" }}
+        openRequest={{ id: 1, source: "local", itemId: card.id }}
+        onNavigationChange={onNavigationChange}
+        onReviewTask={vi.fn()}
+      />,
+    );
+
+    const drawer = await screen.findByRole("complementary", { name: "Archived return card details" });
+    expect(within(drawer).getByText("Archived")).toBeInTheDocument();
+    expect(onNavigationChange).toHaveBeenCalledWith(expect.objectContaining({ filter: "archived", query: "", source: "local" }));
+  });
+
+  it("captures a Hermes idea directly into triage", async () => {
+    render(<AgentWorkspace hermes={session} repositoryPath="/work/product" onReviewTask={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Capture idea for Hermes" }));
+    expect(screen.getByLabelText("Destination")).toHaveValue("hermes:sxcl");
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Investigate flaky checks" } });
+    fireEvent.click(screen.getByRole("button", { name: "Capture idea" }));
+
+    await waitFor(() => expect(mocks.createHermesTask).toHaveBeenCalledWith("sxcl", expect.objectContaining({ title: "Investigate flaky checks", triage: true }), "triage"));
   });
 
   it("projects matching local and Hermes work while preserving source and blocked state", async () => {
@@ -121,7 +194,8 @@ describe("unified agent workspace", () => {
     createLocalCard({ repositoryPath: "/work/elsewhere", title: "Other local card" });
     render(<AgentWorkspace hermes={session} repositoryPath="/work/product" onReviewTask={vi.fn()} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "This Repository" }));
+    await screen.findByRole("option", { name: "Hermes · SXCL" });
+    selectSource("all");
     expect(await screen.findByText("Local repository card")).toBeInTheDocument();
     expect(await screen.findByText("Hermes repository task")).toBeInTheDocument();
     expect(screen.getByText("Blocked repository task")).toBeInTheDocument();
@@ -137,22 +211,35 @@ describe("unified agent workspace", () => {
     createLocalCard({ repositoryPath: "/work/product", title: "Offline product card" });
     createLocalCard({ repositoryPath: "/work/elsewhere", title: "Offline other card" });
     render(<AgentWorkspace hermes={disconnectedSession} repositoryPath="/work/product" onReviewTask={vi.fn()} />);
-    const navigator = screen.getByRole("navigation", { name: "Board navigator" });
+    const navigator = screen.getByRole("navigation", { name: "Work navigation" });
 
-    fireEvent.click(within(navigator).getByRole("button", { name: "This Repository" }));
+    selectSource("all");
     expect(screen.getByText("Offline product card")).toBeInTheDocument();
     expect(screen.queryByText("Offline other card")).not.toBeInTheDocument();
 
-    fireEvent.click(within(navigator).getByRole("button", { name: "All Work" }));
+    fireEvent.click(within(navigator).getByRole("button", { name: "All" }));
     expect(screen.getByText("Offline product card")).toBeInTheDocument();
     expect(screen.getByText("Offline other card")).toBeInTheDocument();
     expect(mocks.getHermesBoard).not.toHaveBeenCalled();
   });
 
+  it("warns and retries when repository worktree scope cannot be loaded", async () => {
+    mocks.invoke.mockImplementation((command: string) => command === "list_card_worktrees"
+      ? Promise.reject(new Error("worktrees unavailable"))
+      : Promise.resolve(null));
+    render(<AgentWorkspace hermes={disconnectedSession} repositoryPath="/work/product" onReviewTask={vi.fn()} />);
+
+    const warning = await screen.findByRole("alert");
+    expect(warning).toHaveTextContent("Repository scope currently shows the selected checkout only");
+    fireEvent.click(within(warning).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(mocks.invoke).toHaveBeenCalledTimes(2));
+  });
+
   it("removes Hermes projection failures after Hermes disconnects", async () => {
     mocks.getHermesBoard.mockRejectedValue(new Error("Hermes is unavailable"));
     const { rerender } = render(<AgentWorkspace hermes={session} repositoryPath="/work/product" onReviewTask={vi.fn()} />);
-    fireEvent.click(await screen.findByRole("button", { name: "This Repository" }));
+    await screen.findByRole("option", { name: "Hermes · SXCL" });
+    selectSource("all");
     expect(await screen.findByRole("alert")).toHaveTextContent("Hermes is unavailable");
 
     rerender(<AgentWorkspace hermes={disconnectedSession} repositoryPath="/work/product" onReviewTask={vi.fn()} />);
@@ -203,30 +290,30 @@ describe("unified agent workspace", () => {
 
     view.rerender(<AgentWorkspace hermes={secondConnection} repositoryPath="/work/product" onReviewTask={vi.fn()} />);
     await waitFor(() => expect(mocks.listHermesBoards).toHaveBeenCalledTimes(2));
-    expect(screen.queryByRole("button", { name: "Hermes · Stale" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Hermes · Stale" })).not.toBeInTheDocument();
     await act(async () => {
       freshBoards.resolve({ current: "fresh", boards: [{ slug: "fresh", name: "Fresh" }] });
       freshProfiles.resolve({ profiles: [] });
       await freshBoards.promise;
     });
-    expect(await screen.findByRole("button", { name: "Hermes · Fresh" })).toBeInTheDocument();
+    expect(await screen.findByRole("option", { name: "Hermes · Fresh" })).toBeInTheDocument();
 
     view.rerender(<AgentWorkspace hermes={thirdConnection} repositoryPath="/work/product" onReviewTask={vi.fn()} />);
     await waitFor(() => expect(mocks.listHermesBoards).toHaveBeenCalledTimes(3));
     view.rerender(<AgentWorkspace hermes={finalConnection} repositoryPath="/work/product" onReviewTask={vi.fn()} />);
-    expect(await screen.findByRole("button", { name: "Hermes · Final" })).toBeInTheDocument();
+    expect(await screen.findByRole("option", { name: "Hermes · Final" })).toBeInTheDocument();
     await act(async () => {
       staleError.reject(new Error("stale connection failed"));
       await Promise.resolve();
     });
 
-    expect(screen.getByRole("button", { name: "Hermes · Final" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Hermes · Final" })).toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("routes destination and Hermes executor without copying the task locally", async () => {
     render(<AgentWorkspace hermes={session} repositoryPath="/work/product" onReviewTask={vi.fn()} />);
-    await screen.findByRole("button", { name: "Hermes · SXCL" });
+    await screen.findByRole("option", { name: "Hermes · SXCL" });
     fireEvent.click(screen.getByRole("button", { name: "+ New work" }));
     fireEvent.change(screen.getByLabelText("Destination"), { target: { value: "hermes:sxcl" } });
     await waitFor(() => expect(screen.getByLabelText("Executor")).toHaveValue("coder"));
@@ -281,7 +368,7 @@ describe("unified agent workspace", () => {
   it("sends an explicit Hermes handoff and visibly preserves its local source", async () => {
     const card = createLocalCard({ repositoryPath: "/work/product", title: "Keep local", body: "Then send." });
     render(<AgentWorkspace hermes={session} repositoryPath="/work/product" onReviewTask={vi.fn()} />);
-    await screen.findByRole("button", { name: "Hermes · SXCL" });
+    await screen.findByRole("option", { name: "Hermes · SXCL" });
     fireEvent.click(screen.getByText("Keep local"));
     fireEvent.click(screen.getByRole("button", { name: "Send to Hermes…" }));
 
@@ -297,7 +384,7 @@ describe("unified agent workspace", () => {
     expect(getLocalBoardDocument().cards[0]).toMatchObject({ id: card.id, title: "Keep local" });
     expect(screen.getByRole("status")).toHaveTextContent("The local card was preserved");
 
-    fireEvent.click(screen.getByRole("button", { name: "Local Board" }));
+    selectSource("local");
     fireEvent.click(screen.getByText("Keep local"));
     fireEvent.click(screen.getByRole("button", { name: /Hermes · sxcl.*task-new.*Open source/ }));
     expect(await screen.findByText("Hermes source sxcl · task-new")).toBeInTheDocument();
@@ -306,7 +393,7 @@ describe("unified agent workspace", () => {
   it("allows Hermes dispatcher assignment when no profiles are available", async () => {
     mocks.listHermesProfiles.mockResolvedValue({ profiles: [] });
     render(<AgentWorkspace hermes={session} repositoryPath="/work/product" onReviewTask={vi.fn()} />);
-    await screen.findByRole("button", { name: "Hermes · SXCL" });
+    await screen.findByRole("option", { name: "Hermes · SXCL" });
     fireEvent.click(screen.getByRole("button", { name: "+ New work" }));
     fireEvent.change(screen.getByLabelText("Destination"), { target: { value: "hermes:sxcl" } });
     fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Dispatcher task" } });
@@ -319,6 +406,10 @@ describe("unified agent workspace", () => {
 
 function connectedSession(url: string): HermesSessionController {
   return { ...session, status: { ...session.status, url } };
+}
+
+function selectSource(source: string) {
+  fireEvent.change(screen.getByLabelText("Work source"), { target: { value: source } });
 }
 
 function deferred<T>() {

@@ -225,4 +225,43 @@ describe("local board store", () => {
       expect.objectContaining({ board: "sxcl", taskId: "task-42" }),
     ]);
   });
+
+  it("archives and restores cards without deleting their runs, while active cards stay visible", async () => {
+    invoke.mockResolvedValue(null);
+    const store = await import("./store");
+    await store.initLocalBoardStore();
+    const finished = store.createLocalCard({ repositoryPath: "/work/product", title: "Finished" });
+    const active = store.createLocalCard({ repositoryPath: "/work/product", title: "Active" });
+    const finishedRun = store.createLocalRun(finished.id, "Finished", codexProfile);
+    store.patchLocalRun(finishedRun.id, { status: "idle" });
+    const activeRun = store.createLocalRun(active.id, "Active", codexProfile);
+
+    expect(store.archiveLocalCards([finished.id, active.id])).toEqual([finished.id]);
+    expect(store.getLocalBoardDocument().cards.find((card) => card.id === finished.id)?.archivedAt).toEqual(expect.any(Number));
+    expect(store.getLocalBoardDocument().cards.find((card) => card.id === active.id)?.archivedAt).toBeUndefined();
+    expect(store.latestRunForCard(finished.id)?.id).toBe(finishedRun.id);
+    expect(store.latestRunForCard(active.id)?.id).toBe(activeRun.id);
+
+    expect(store.restoreLocalCards([finished.id])).toEqual([finished.id]);
+    expect(store.getLocalBoardDocument().cards.find((card) => card.id === finished.id)?.archivedAt).toBeUndefined();
+    expect(store.latestRunForCard(finished.id)?.id).toBe(finishedRun.id);
+  });
+
+  it("reads archived timestamps without requiring them on older cards", async () => {
+    const store = await import("./store");
+    const parsed = store.readLocalBoard(JSON.stringify({
+      version: 2,
+      updatedAt: 10,
+      cards: [
+        { id: "old", repositoryPath: "/work/product", title: "Old", body: "", lane: "done", executionProfileId: null, hermesHandoffs: [], createdAt: 1, updatedAt: 1 },
+        { id: "archived", repositoryPath: "/work/product", title: "Archived", body: "", lane: "done", executionProfileId: null, hermesHandoffs: [], archivedAt: 9, createdAt: 1, updatedAt: 9 },
+      ],
+      runs: [],
+    }));
+
+    expect(parsed?.cards).toEqual([
+      expect.objectContaining({ id: "old", archivedAt: undefined }),
+      expect.objectContaining({ id: "archived", archivedAt: 9 }),
+    ]);
+  });
 });

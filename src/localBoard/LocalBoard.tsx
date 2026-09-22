@@ -18,9 +18,11 @@ import type { ReviewTarget } from "../review/inlineComments";
 import type { Branch } from "../types";
 import { continueLocalRun, launchLocalCard, runtimeLabel, stopLocalRun } from "./runtime";
 import {
+  archiveLocalCards,
   createLocalCard,
   latestRunForCard,
   patchLocalCard,
+  restoreLocalCards,
   useLocalBoardDocument,
 } from "./store";
 import { LOCAL_LANES } from "./types";
@@ -36,7 +38,14 @@ const LANE_LABELS: Record<LocalLane, string> = {
 
 export interface LocalBoardProps {
   repositoryPath?: string;
+  allRepositories?: boolean;
+  scopeRepositoryPaths?: string[];
+  workFilter?: "all" | "attention" | "active" | "completed" | "archived";
+  query?: string;
   initialCardId?: string | null;
+  initialShowArchived?: boolean;
+  onInitialCardOpened?: () => void;
+  onShowArchivedChange?: (showArchived: boolean) => void;
   onCreateWork?: (lane: LocalLane) => void;
   onSendToHermes?: (card: LocalCard) => void;
   onOpenHermesBoard?: (board: string, taskId?: string) => void;
@@ -45,7 +54,14 @@ export interface LocalBoardProps {
 
 export function LocalBoard({
   repositoryPath,
+  allRepositories = false,
+  scopeRepositoryPaths,
+  workFilter,
+  query = "",
   initialCardId,
+  initialShowArchived,
+  onInitialCardOpened,
+  onShowArchivedChange,
   onCreateWork,
   onSendToHermes,
   onOpenHermesBoard,
@@ -58,11 +74,24 @@ export function LocalBoard({
   const [runtimes, setRuntimes] = useState<AgentRuntimeStatus[]>([]);
   const [providerError, setProviderError] = useState<string | null>(null);
   const [checkingProviders, setCheckingProviders] = useState(true);
+  const [showArchived, setShowArchived] = useState(initialShowArchived ?? false);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedCardIds, setSelectedCardIds] = useState<Set<string>>(() => new Set());
+  const [archiveNotice, setArchiveNotice] = useState<string | null>(null);
   const previousRepositoryPath = useRef(repositoryPath);
+  const openedInitialCardRef = useRef<string | null>(null);
   const launchingCards = useRef(new Set<string>());
+  const repositoryCards = useMemo(
+    () => {
+      if (allRepositories) return board.cards;
+      const paths = new Set((scopeRepositoryPaths ?? (repositoryPath ? [repositoryPath] : [])).map(normalizeRepositoryPath));
+      return board.cards.filter((card) => paths.has(normalizeRepositoryPath(card.repositoryPath)));
+    },
+    [allRepositories, board.cards, repositoryPath, scopeRepositoryPaths],
+  );
   const cards = useMemo(
-    () => board.cards.filter((card) => card.repositoryPath === repositoryPath),
-    [board.cards, repositoryPath],
+    () => repositoryCards.filter((card) => matchesLocalWorkFilter(card, workFilter ?? (showArchived ? "archived" : "all"), query)),
+    [query, repositoryCards, showArchived, workFilter],
   );
   const selectedCard = cards.find((card) => card.id === selectedCardId) ?? null;
 
@@ -84,8 +113,22 @@ export function LocalBoard({
   }, []);
 
   useEffect(() => {
-    if (initialCardId) setSelectedCardId(initialCardId);
-  }, [initialCardId]);
+    if (!initialCardId || openedInitialCardRef.current === initialCardId) return;
+    openedInitialCardRef.current = initialCardId;
+    setSelectedCardId(initialCardId);
+    const archived = board.cards.find((card) => card.id === initialCardId)?.archivedAt !== undefined;
+    setShowArchived(archived);
+    onShowArchivedChange?.(archived);
+    onInitialCardOpened?.();
+  }, [board.cards, initialCardId, onShowArchivedChange, onInitialCardOpened]);
+
+  useEffect(() => {
+    if (initialShowArchived !== undefined) setShowArchived(initialShowArchived);
+  }, [initialShowArchived]);
+
+  useEffect(() => {
+    if (workFilter !== undefined) setShowArchived(workFilter === "archived");
+  }, [workFilter]);
 
   useEffect(() => {
     if (previousRepositoryPath.current === repositoryPath) return;
@@ -93,7 +136,13 @@ export function LocalBoard({
     setSelectedCardId((cardId) => cards.some((card) => card.id === cardId) ? cardId : null);
   }, [cards, repositoryPath]);
 
-  if (!repositoryPath) {
+  useEffect(() => {
+    setSelectionMode(false);
+    setSelectedCardIds(new Set());
+    setArchiveNotice(null);
+  }, [allRepositories, repositoryPath, showArchived, workFilter]);
+
+  if (!repositoryPath && !allRepositories) {
     return <div className="board-loading">Open a repository to use the local board.</div>;
   }
 
@@ -106,6 +155,41 @@ export function LocalBoard({
     event.preventDefault();
     const cardId = event.dataTransfer.getData("application/x-patchdeck-card");
     if (cardId) patchLocalCard(cardId, { lane });
+  }
+
+  function toggleCardSelection(cardId: string) {
+    setSelectedCardIds((current) => {
+      const next = new Set(current);
+      if (next.has(cardId)) next.delete(cardId);
+      else next.add(cardId);
+      return next;
+    });
+  }
+
+  function toggleLaneSelection(laneCards: LocalCard[]) {
+    const selectable = laneCards.filter((card) => showArchived || canArchiveLocalCard(card)).map((card) => card.id);
+    const allSelected = selectable.length > 0 && selectable.every((id) => selectedCardIds.has(id));
+    setSelectedCardIds((current) => {
+      const next = new Set(current);
+      selectable.forEach((id) => allSelected ? next.delete(id) : next.add(id));
+      return next;
+    });
+  }
+
+  function applyBulkLocalAction() {
+    if (selectedCardIds.size === 0) return;
+    if (showArchived) {
+      const restored = restoreLocalCards(selectedCardIds);
+      setArchiveNotice(`Restored ${restored.length} card${restored.length === 1 ? "" : "s"}.`);
+      setSelectedCardIds(new Set());
+      return;
+    }
+    const count = selectedCardIds.size;
+    if (!window.confirm(`Archive ${count} local card${count === 1 ? "" : "s"}?`)) return;
+    const archived = archiveLocalCards(selectedCardIds);
+    const skipped = count - archived.length;
+    setArchiveNotice(`${archived.length} card${archived.length === 1 ? "" : "s"} archived.${skipped ? ` ${skipped} active card${skipped === 1 ? " was" : "s were"} left on the board.` : ""}`);
+    setSelectedCardIds(new Set());
   }
 
   async function launchCard(card: LocalCard, requestedProfile?: ExecutionProfile) {
@@ -134,22 +218,43 @@ export function LocalBoard({
       <header className="agent-board-toolbar">
         <div className="agent-board-title">
           <span className="agent-kicker">Local board</span>
-          <strong>{repositoryName(repositoryPath)}</strong>
+          <strong>{allRepositories ? "All repositories" : repositoryName(repositoryPath ?? "")}</strong>
         </div>
         <span className={`provider-health ${readyCount ? "available" : "unavailable"}`}>
           <span className="live-pulse" />
           {checkingProviders ? "Checking agents…" : `${readyCount} agent${readyCount === 1 ? "" : "s"} ready`}
         </span>
+        {workFilter === undefined && <label className="archive-toggle">
+          <input type="checkbox" checked={showArchived} onChange={(event) => {
+            setShowArchived(event.target.checked);
+            onShowArchivedChange?.(event.target.checked);
+          }} />
+          Archived
+        </label>}
+        <button className="secondary-button board-selection-toggle" aria-pressed={selectionMode} onClick={() => {
+          setSelectionMode((current) => !current);
+          setSelectedCardIds(new Set());
+        }}>{selectionMode ? "Cancel selection" : showArchived ? "Select to restore" : "Select cards"}</button>
         <button className="icon-button" aria-label="Check agent providers" title="Check agent providers" onClick={() => void refreshProviders()} disabled={checkingProviders}><RefreshIcon /></button>
         {!onCreateWork && <button className="primary-button board-create-button" onClick={() => requestCreate("todo")}><PlusIcon /> New work</button>}
       </header>
 
       {!checkingProviders && providerError && <div className="board-error" role="alert">{providerError}</div>}
+      {archiveNotice && <div className="board-action-notice workspace-notice" role="status">{archiveNotice}</div>}
+      {selectionMode && (
+        <div className="board-selection-bar" aria-live="polite">
+          <strong>{selectedCardIds.size} selected</strong>
+          <button className="secondary-button" disabled={selectedCardIds.size === 0} onClick={() => setSelectedCardIds(new Set())}>Clear</button>
+          <button className="primary-button" disabled={selectedCardIds.size === 0} onClick={applyBulkLocalAction}>{showArchived ? "Restore selected" : "Archive selected"}</button>
+        </div>
+      )}
 
       <div className="kanban-scroll" aria-label="Local Kanban board">
         <div className="kanban-columns local-kanban-columns">
           {LOCAL_LANES.map((lane) => {
             const laneCards = cards.filter((card) => card.lane === lane);
+            const selectableLaneCards = laneCards.filter((card) => showArchived || canArchiveLocalCard(card));
+            const allLaneCardsSelected = selectableLaneCards.length > 0 && selectableLaneCards.every((card) => selectedCardIds.has(card.id));
             return (
               <section
                 className={`kanban-column lane-${lane}`}
@@ -162,6 +267,11 @@ export function LocalBoard({
                   <span className="lane-dot" />
                   <strong>{LANE_LABELS[lane]}</strong>
                   <span className="lane-count">{laneCards.length}</span>
+                  {selectionMode && selectableLaneCards.length > 0 && (
+                    <button className="lane-select-button" onClick={() => toggleLaneSelection(laneCards)} aria-label={`${allLaneCardsSelected ? "Clear" : "Select"} all ${showArchived ? "archived " : "archivable "}cards in ${LANE_LABELS[lane]}`}>
+                      {allLaneCardsSelected ? "Clear" : "Select all"}
+                    </button>
+                  )}
                   <button className="lane-create-button" aria-label={`New card in ${LANE_LABELS[lane]}`} onClick={() => requestCreate(lane)}>+</button>
                 </header>
                 <div className="kanban-card-list">
@@ -172,6 +282,10 @@ export function LocalBoard({
                       run={latestRunForCard(card.id)}
                       profile={profileDocument.profiles.find((candidate) => candidate.id === card.executionProfileId)}
                       onOpen={() => setSelectedCardId(card.id)}
+                      selecting={selectionMode}
+                      selected={selectedCardIds.has(card.id)}
+                      selectable={showArchived || canArchiveLocalCard(card)}
+                      onToggle={() => toggleCardSelection(card.id)}
                     />
                   ))}
                   {laneCards.length === 0 && <div className="empty-lane">Drop cards here</div>}
@@ -182,7 +296,7 @@ export function LocalBoard({
         </div>
       </div>
 
-      {createLane && (
+      {createLane && repositoryPath && (
         <LocalCreateDialog
           lane={createLane}
           repositoryPath={repositoryPath}
@@ -224,29 +338,42 @@ export function LocalBoard({
   );
 }
 
-function LocalCardView({ card, run, profile, onOpen }: {
+function LocalCardView({ card, run, profile, onOpen, selecting, selected, selectable, onToggle }: {
   card: LocalCard;
   run: LocalRun | null;
   profile?: ExecutionProfile;
   onOpen: () => void;
+  selecting: boolean;
+  selected: boolean;
+  selectable: boolean;
+  onToggle: () => void;
 }) {
   return (
-    <button
-      className="kanban-card local-kanban-card"
-      draggable
-      onDragStart={(event) => event.dataTransfer.setData("application/x-patchdeck-card", card.id)}
-      onClick={onOpen}
-    >
-      <span className="task-source-badge source-local">Local</span>
-      <span className="task-id">{shortId(card.id)}</span>
-      <strong>{card.title}</strong>
-      {card.body && <p>{card.body}</p>}
-      <span className="task-card-footer">
-        <span className="task-assignee">{profile?.name ?? (run ? runtimeLabel(run.runtimeId) : "No agent")}</span>
-        {run && <RunStatus run={run} />}
-      </span>
-      <span className="task-card-footer">Last activity {formatActivity(run?.updatedAt ?? card.updatedAt)}</span>
-    </button>
+    <div className={`selectable-kanban-card${selected ? " selected" : ""}`}>
+      {selecting && (
+        <label className="card-selection-control" title={selectable ? undefined : "Active agent runs cannot be archived."}>
+          <input type="checkbox" aria-label={`Select local card ${card.title}`} checked={selected} disabled={!selectable} onChange={onToggle} />
+        </label>
+      )}
+      <button
+        className="kanban-card local-kanban-card"
+        draggable={!selecting && card.archivedAt === undefined}
+        disabled={selecting && !selectable}
+        title={selecting && !selectable ? "Active agent runs cannot be archived." : undefined}
+        onDragStart={(event) => event.dataTransfer.setData("application/x-patchdeck-card", card.id)}
+        onClick={selecting ? (selectable ? onToggle : undefined) : onOpen}
+      >
+        <span className="task-source-badge source-local">Local</span>
+        <span className="task-id">{shortId(card.id)}</span>
+        <strong>{card.title}</strong>
+        {card.body && <p>{card.body}</p>}
+        <span className="task-card-footer">
+          <span className="task-assignee">{profile?.name ?? (run ? runtimeLabel(run.runtimeId) : "No agent")}</span>
+          {run && <RunStatus run={run} />}
+        </span>
+        <span className="task-card-footer">Last activity {formatActivity(run?.updatedAt ?? card.updatedAt)}</span>
+      </button>
+    </div>
   );
 }
 
@@ -312,6 +439,7 @@ function LocalCardDrawer({ card, run, profiles, runtimes, onClose, onLaunch, onS
   const [reply, setReply] = useState("");
   const [profileId, setProfileId] = useState(card.executionProfileId ?? executionProfileForRepository(card.repositoryPath)?.id ?? "");
   const busy = run?.status === "starting" || run?.status === "running";
+  const archived = card.archivedAt !== undefined;
   const selectedProfile = profiles.find((profile) => profile.id === profileId) ?? null;
   const label = run ? runtimeLabel(run.runtimeId) : selectedProfile?.name ?? "Agent";
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
@@ -340,7 +468,7 @@ function LocalCardDrawer({ card, run, profiles, runtimes, onClose, onLaunch, onS
   async function sendReply(event: FormEvent) {
     event.preventDefault();
     const message = reply.trim();
-    if (!run?.sessionId || !message || busy) return;
+    if (!run?.sessionId || !message || busy || archived) return;
     setReply("");
     await continueLocalRun(run, run.repositoryPath ?? card.workspace?.worktreePath ?? card.repositoryPath, message);
   }
@@ -353,14 +481,31 @@ function LocalCardDrawer({ card, run, profiles, runtimes, onClose, onLaunch, onS
           <button className="plain-close" onClick={onClose} aria-label="Close card details"><CloseIcon /></button>
         </header>
         <div className="task-state-row">
-          <span className={`status-pill status-${card.lane}`}>{LANE_LABELS[card.lane]}</span>
+          <span className={`status-pill status-${archived ? "archived" : card.lane}`}>{archived ? "Archived" : LANE_LABELS[card.lane]}</span>
           <label>Lane
-            <select value={card.lane} onChange={(event) => patchLocalCard(card.id, { lane: event.target.value as LocalLane })}>
+            <select value={card.lane} disabled={archived} onChange={(event) => patchLocalCard(card.id, { lane: event.target.value as LocalLane })}>
               {LOCAL_LANES.map((lane) => <option key={lane} value={lane}>{LANE_LABELS[lane]}</option>)}
             </select>
           </label>
           <span className="drawer-assignee">{run ? runtimeLabel(run.runtimeId) : "No agent"}</span>
         </div>
+        {card.workspace && onReviewTask && (
+          <div className="local-review-actions">
+            <div>
+              <strong>Changes</strong>
+              <span>{card.workspace.branch} from {card.workspace.baseBranch}{changedCount !== null ? ` · ${changedCount} changed file${changedCount === 1 ? "" : "s"}` : ""}</span>
+            </div>
+            <button className="primary-button" onClick={() => onReviewTask({
+              source: "local",
+              board: "local",
+              taskId: card.id,
+              title: card.title,
+              status: card.archivedAt !== undefined ? "archived" : card.lane,
+              repositoryPath: card.workspace!.worktreePath,
+              baseBranch: card.workspace!.baseBranch,
+            })}>Review changes</button>
+          </div>
+        )}
         <div className="drawer-scroll local-run-scroll">
           <section className="drawer-section">
             <h3>Instructions</h3>
@@ -378,16 +523,17 @@ function LocalCardDrawer({ card, run, profiles, runtimes, onClose, onLaunch, onS
           )}
           <section className="drawer-section local-run-section">
             <h3>Agent conversation {run && <RunStatus run={run} />}</h3>
+            {archived && <div className="drawer-error" role="status">Restore this card before starting or continuing agent work.</div>}
             {run && !run.repositoryPath && <div className="drawer-error">This older conversation has no recorded workspace. Start a new card in an isolated workspace to continue safely.</div>}
             {!run ? (
               <div className="local-provider-empty">
                 <p>Choose an execution profile and an isolated workspace. New work starts from the base branch. Uncommitted changes in the original checkout are not copied.</p>
-                <WorkspacePicker card={card} disabled={busy} onError={setWorkspaceError} />
+                <WorkspacePicker card={card} disabled={busy || archived} onError={setWorkspaceError} />
                 {workspaceError && <div className="drawer-error" role="alert">{workspaceError}</div>}
-                <select aria-label="Execution profile" value={profileId} onChange={(event) => setProfileId(event.target.value)}>
+                <select aria-label="Execution profile" value={profileId} disabled={archived} onChange={(event) => setProfileId(event.target.value)}>
                   {profiles.map((profile) => <option key={profile.id} value={profile.id} disabled={!runtimeReady(runtimes, profile.runtimeId)}>{profile.name}{runtimeReady(runtimes, profile.runtimeId) ? "" : " (unavailable)"}</option>)}
                 </select>
-                <button className="primary-button" onClick={() => selectedProfile && onLaunch(selectedProfile)} disabled={!card.workspace || !selectedProfile || !runtimeReady(runtimes, selectedProfile.runtimeId)}>Run with {selectedProfile ? runtimeLabel(selectedProfile.runtimeId) : "agent"}</button>
+                <button className="primary-button" onClick={() => selectedProfile && onLaunch(selectedProfile)} disabled={archived || !card.workspace || !selectedProfile || !runtimeReady(runtimes, selectedProfile.runtimeId)}>Run with {selectedProfile ? runtimeLabel(selectedProfile.runtimeId) : "agent"}</button>
               </div>
             ) : (
               <>
@@ -407,34 +553,15 @@ function LocalCardDrawer({ card, run, profiles, runtimes, onClose, onLaunch, onS
                   <button className="secondary-button stop-run-button" onClick={() => void stopLocalRun(run)}>Stop run</button>
                 ) : run.sessionId && run.repositoryPath ? (
                   <form className="local-run-composer" onSubmit={sendReply}>
-                    <textarea value={reply} onChange={(event) => setReply(event.target.value)} rows={3} placeholder={`Continue this ${runtimeLabel(run.runtimeId)} conversation…`} aria-label={`Message ${runtimeLabel(run.runtimeId)}`} />
-                    <button className="primary-button" disabled={!reply.trim()}>Send</button>
+                    <textarea value={reply} disabled={archived} onChange={(event) => setReply(event.target.value)} rows={3} placeholder={`Continue this ${runtimeLabel(run.runtimeId)} conversation…`} aria-label={`Message ${runtimeLabel(run.runtimeId)}`} />
+                    <button className="primary-button" disabled={archived || !reply.trim()}>Send</button>
                   </form>
                 ) : !run.repositoryPath ? null : (
-                  <button className="secondary-button" onClick={() => selectedProfile && onLaunch(selectedProfile)} disabled={!selectedProfile || !runtimeReady(runtimes, selectedProfile.runtimeId)}>Retry with {label}</button>
+                  <button className="secondary-button" onClick={() => selectedProfile && onLaunch(selectedProfile)} disabled={archived || !selectedProfile || !runtimeReady(runtimes, selectedProfile.runtimeId)}>Retry with {label}</button>
                 )}
               </>
             )}
           </section>
-          {card.workspace && onReviewTask && (
-            <section className="drawer-section">
-              <h3>Changes</h3>
-              <p>{card.workspace.branch} from {card.workspace.baseBranch}</p>
-              {changedCount !== null && <p>{changedCount} changed file{changedCount === 1 ? "" : "s"}</p>}
-              <button className="primary-button" onClick={() => {
-                const target = {
-                  source: "local",
-                  board: "local",
-                  taskId: card.id,
-                  title: card.title,
-                  status: card.lane,
-                  repositoryPath: card.workspace!.worktreePath,
-                  baseBranch: card.workspace!.baseBranch,
-                } as ReviewTarget;
-                onReviewTask(target);
-              }}>Review changes</button>
-            </section>
-          )}
           {onSendToHermes && (
             <section className="drawer-section send-to-hermes-section">
               <h3>Orchestrator</h3>
@@ -521,8 +648,35 @@ function runtimeReady(runtimes: AgentRuntimeStatus[], runtimeId: AgentRuntimeId)
   return runtimes.some((runtime) => runtime.id === runtimeId && runtime.ready);
 }
 
+function matchesLocalWorkFilter(card: LocalCard, filter: NonNullable<LocalBoardProps["workFilter"]>, query: string) {
+  const archived = card.archivedAt !== undefined;
+  if (filter === "archived") {
+    if (!archived) return false;
+  } else if (archived) {
+    return false;
+  } else if (filter === "attention") {
+    const run = latestRunForCard(card.id);
+    if (card.lane !== "review" && run?.status !== "failed") return false;
+  } else if (filter === "active" && card.lane !== "in_progress") {
+    return false;
+  } else if (filter === "completed" && card.lane !== "done") {
+    return false;
+  }
+  const needle = query.trim().toLocaleLowerCase();
+  return !needle || [card.id, card.title, card.body, card.repositoryPath].some((value) => value.toLocaleLowerCase().includes(needle));
+}
+
+function canArchiveLocalCard(card: LocalCard) {
+  const run = latestRunForCard(card.id);
+  return run?.status !== "starting" && run?.status !== "running";
+}
+
 function repositoryName(path: string) {
   return path.replace(/[\\/]$/, "").split(/[\\/]/).pop() || path;
+}
+
+function normalizeRepositoryPath(path: string) {
+  return path.replace(/\\/g, "/").replace(/\/+$/, "");
 }
 
 function shortId(id: string) {

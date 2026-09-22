@@ -4,6 +4,7 @@ import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetExecutionProfiles } from "../providers/profiles";
 import { NewWorkComposer } from "./NewWorkComposer";
+import { getLocalBoardDocument, resetLocalBoardStore } from "./store";
 import type { LocalCard } from "./types";
 
 const mocks = vi.hoisted(() => ({
@@ -45,6 +46,7 @@ const handoffCard: LocalCard = {
 describe("new work composer interaction contract", () => {
   beforeEach(() => {
     localStorage.clear();
+    resetLocalBoardStore();
     resetExecutionProfiles();
     mocks.invoke.mockReset().mockResolvedValue(null);
     mocks.createHermesTask.mockReset().mockResolvedValue({ task: { id: "task-new", title: "Keep local", status: "todo" } });
@@ -106,6 +108,10 @@ describe("new work composer interaction contract", () => {
       />,
     );
 
+    const advanced = screen.getByText("Advanced").closest("details");
+    expect(advanced).not.toHaveAttribute("open");
+    await waitFor(() => expect(advanced).toHaveTextContent("Priority 0 · default skills · worktree · /work/product · no parent · goal mode off"));
+    fireEvent.click(screen.getByText("Advanced"));
     fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Implement routing" } });
     fireEvent.change(screen.getByLabelText("Priority"), { target: { value: "3" } });
     fireEvent.change(screen.getByLabelText("Skills"), { target: { value: "testing, code-review" } });
@@ -132,6 +138,99 @@ describe("new work composer interaction contract", () => {
       }),
       "todo",
     ));
+  });
+
+  it("captures a Hermes idea in Triage without implicitly assigning or starting an agent", async () => {
+    render(
+      <NewWorkComposer
+        repositoryPath="/work/product"
+        boards={boards}
+        hermesProfiles={[{ name: "coder", is_default: true, description: "Writes code" }]}
+        initialDestination="hermes:sxcl"
+        targetStatus="triage"
+        onClose={vi.fn()}
+        onCreated={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("dialog", { name: "Capture Hermes idea" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Capture idea" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Executor")).toHaveValue("");
+    expect(screen.getByText(/Triage for refinement before execution/i)).toBeInTheDocument();
+    const title = screen.getByLabelText("Title");
+    fireEvent.change(title, { target: { value: "Explore a smaller review loop" } });
+    fireEvent.keyDown(title, { key: "Enter" });
+
+    await waitFor(() => expect(mocks.createHermesTask).toHaveBeenCalledWith(
+      "sxcl",
+      expect.objectContaining({ title: "Explore a smaller review loop", assignee: null, triage: true }),
+      "triage",
+    ));
+    expect(mocks.startRuntime).not.toHaveBeenCalled();
+  });
+
+  it("creates a local card without running the selected profile when the form uses its safe default", async () => {
+    mocks.listRuntimes.mockResolvedValue([{ id: "codex", ready: true }]);
+    const created = vi.fn();
+    render(
+      <NewWorkComposer
+        repositoryPath="/work/product"
+        boards={boards}
+        hermesProfiles={[]}
+        onClose={vi.fn()}
+        onCreated={created}
+      />,
+    );
+    await waitFor(() => expect(screen.getByLabelText("Executor")).toHaveValue("codex-workspace"));
+    const title = screen.getByLabelText("Title");
+    fireEvent.change(title, { target: { value: "Keep this queued" } });
+
+    expect(screen.getByRole("button", { name: "Create card" })).toBeEnabled();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Create & run" })).toBeEnabled());
+    fireEvent.keyDown(title, { key: "Enter" });
+
+    await waitFor(() => expect(created).toHaveBeenCalledWith(expect.objectContaining({
+      source: "local",
+      card: expect.objectContaining({ title: "Keep this queued", executionProfileId: "codex-workspace" }),
+    })));
+    expect(created.mock.calls[0][0].card.workspace).toBeUndefined();
+    expect(mocks.invoke).not.toHaveBeenCalledWith("create_card_worktree", expect.anything());
+    expect(mocks.startRuntime).not.toHaveBeenCalled();
+  });
+
+  it("preserves the draft and prevents duplicate Create & run attempts when workspace preparation fails", async () => {
+    const workspace = deferred<never>();
+    mocks.listRuntimes.mockResolvedValue([{ id: "codex", ready: true }]);
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "open_repository") return Promise.resolve({ suggestedBaseBranch: "main" });
+      if (command === "create_card_worktree") return workspace.promise;
+      return Promise.resolve(null);
+    });
+    const created = vi.fn();
+    render(
+      <NewWorkComposer
+        repositoryPath="/work/product"
+        boards={boards}
+        hermesProfiles={[]}
+        onClose={vi.fn()}
+        onCreated={created}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Retry this draft" } });
+    fireEvent.change(screen.getByLabelText("Instructions"), { target: { value: "Keep these details." } });
+    const run = await screen.findByRole("button", { name: "Create & run" });
+    await waitFor(() => expect(run).toBeEnabled());
+    fireEvent.click(run);
+    fireEvent.click(run);
+    await waitFor(() => expect(mocks.invoke.mock.calls.filter(([command]) => command === "create_card_worktree")).toHaveLength(1));
+
+    workspace.reject(new Error("workspace unavailable"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("workspace unavailable");
+    expect(screen.getByLabelText("Title")).toHaveValue("Retry this draft");
+    expect(screen.getByLabelText("Instructions")).toHaveValue("Keep these details.");
+    expect(screen.getByRole("button", { name: "Create & run" })).toBeEnabled();
+    expect(created).not.toHaveBeenCalled();
+    expect(getLocalBoardDocument().cards).toHaveLength(0);
   });
 
   it("dismisses with Escape and restores focus to the opener", async () => {
@@ -190,3 +289,11 @@ describe("new work composer interaction contract", () => {
     expect(last).toHaveFocus();
   });
 });
+
+function deferred<T>() {
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((_resolve, promiseReject) => {
+    reject = promiseReject;
+  });
+  return { promise, reject };
+}

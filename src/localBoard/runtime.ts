@@ -14,6 +14,8 @@ import {
 import type { LocalCard, LocalRun } from "./types";
 
 export async function launchLocalCard(card: LocalCard, profile: ExecutionProfile) {
+  const storedCard = getLocalBoardDocument().cards.find((candidate) => candidate.id === card.id);
+  if (storedCard?.archivedAt !== undefined) throw new Error("Restore this card before starting agent work.");
   if (!card.workspace) throw new Error("Choose or create a workspace before starting this card.");
   const prompt = card.body ? `${card.title}\n\n${card.body}` : card.title;
   patchLocalCard(card.id, { executionProfileId: profile.id, lane: "in_progress" });
@@ -23,6 +25,8 @@ export async function launchLocalCard(card: LocalCard, profile: ExecutionProfile
 }
 
 export async function continueLocalRun(run: LocalRun, repositoryPath: string, prompt: string) {
+  const card = getLocalBoardDocument().cards.find((candidate) => candidate.id === run.cardId);
+  if (card?.archivedAt !== undefined) throw new Error("Restore this card before continuing agent work.");
   if (!run.repositoryPath) {
     patchLocalRun(run.id, {
       status: "failed",
@@ -32,7 +36,6 @@ export async function continueLocalRun(run: LocalRun, repositoryPath: string, pr
   }
   const executionPath = run.repositoryPath ?? repositoryPath;
   addRunUserMessage(run.id, prompt);
-  const card = getLocalBoardDocument().cards.find((candidate) => candidate.id === run.cardId);
   if (card) patchLocalCard(card.id, { lane: "in_progress" });
   await executeLocalTurn({ ...run, status: "starting" }, executionPath, prompt);
 }

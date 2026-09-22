@@ -2,8 +2,9 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import "@testing-library/jest-dom/vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
-import { createLocalCard, patchLocalCard, resetLocalBoardStore } from "./localBoard/store";
+import { createLocalCard, getLocalBoardDocument, patchLocalCard, resetLocalBoardStore } from "./localBoard/store";
 import { resetReviewStore } from "./review/reviewStore";
+import { readReviewTarget, writeReviewTarget } from "./review/inlineComments";
 import type { Comparison, FileDiff, RepositoryInfo } from "./types";
 
 const mocks = vi.hoisted(() => ({
@@ -16,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   loadFileDiff: vi.fn(),
   loadWorkingTreeFileDiff: vi.fn(),
   listCommits: vi.fn(),
+  listCardWorktrees: vi.fn(),
 }));
 
 const hermesMocks = vi.hoisted(() => ({
@@ -111,7 +113,7 @@ vi.mock("./hermes/api", () => ({
   unsubscribeHermesEvents: hermesMocks.unsubscribeHermesEvents,
 }));
 vi.mock("./providers/workspaces", () => ({
-  listCardWorktrees: vi.fn(async () => []),
+  listCardWorktrees: mocks.listCardWorktrees,
   createCardWorktree: vi.fn(async ({ repositoryPath, baseBranch }) => ({ repositoryPath, worktreePath: `${repositoryPath}/task-worktree`, branch: "patchdeck/task", baseBranch })),
   attachCardWorktree: vi.fn(),
 }));
@@ -176,6 +178,7 @@ const fileDiff: FileDiff = {
 describe("Patchdeck", () => {
   beforeEach(() => {
     localStorage.clear();
+    localStorage.setItem("patchdeck.review-screen", "changes");
     resetLocalBoardStore();
     resetReviewStore();
     mocks.dialogOpen.mockReset();
@@ -186,6 +189,7 @@ describe("Patchdeck", () => {
     mocks.loadFileDiff.mockReset();
     mocks.loadWorkingTreeFileDiff.mockReset();
     mocks.compareWorkingTree.mockReset().mockResolvedValue({ ...comparison, mode: "workingTree", revision: "test" });
+    mocks.listCardWorktrees.mockReset().mockResolvedValue([]);
     mocks.listCommits.mockReset();
     mocks.listCommits.mockResolvedValue([]);
     editorMocks.loadEditableFile.mockReset();
@@ -239,6 +243,86 @@ describe("Patchdeck", () => {
 
   afterEach(cleanup);
 
+  it("lands on existing worktrees and opens external work directly in Working tree mode", async () => {
+    localStorage.removeItem("patchdeck.review-screen");
+    localStorage.setItem("patchdeck.session", JSON.stringify({ version: 1, tabs: [{ name: repository.name, path: repository.path, openMode: "repository" }], activePath: repository.path }));
+    const external = { ...repository, name: "external-agent", path: "/work/external-agent", currentBranch: "agent/external" };
+    mocks.openRepository.mockImplementation((path: string) => Promise.resolve(path === external.path ? external : repository));
+    mocks.listCardWorktrees.mockResolvedValue([{ path: external.path, branch: "agent/external" }]);
+    mocks.loadWorkingTreeFileDiff.mockResolvedValue(fileDiff);
+    localStorage.setItem("patchdeck.project-views.v1", JSON.stringify({ [external.path]: { mode: "branch", baseBranch: "main", compareBranch: "feature", selectedPath: null } }));
+    writeReviewTarget(external.path, { source: "local", board: "local", taskId: "old-card", title: "Old task context", status: "review", repositoryPath: external.path });
+
+    render(<App />);
+
+    expect(await screen.findByRole("region", { name: "Worktree review queue" })).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "Review agent/external" }));
+    expect(await screen.findByRole("combobox", { name: "Comparison mode" })).toHaveValue("workingTree");
+    expect(screen.getByRole("tab", { name: external.name })).toHaveAttribute("aria-selected", "true");
+    expect(mocks.compareWorkingTree).toHaveBeenCalledWith(external.path, "main");
+    expect(screen.queryByRole("button", { name: "Back to card" })).not.toBeInTheDocument();
+    expect(readReviewTarget(external.path)).toBeNull();
+    expect(getLocalBoardDocument().cards).toHaveLength(0);
+    expect(providerMocks.startAgentRuntime).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Worktrees" }));
+    expect(await screen.findByRole("region", { name: "Worktree review queue" })).toBeInTheDocument();
+  });
+
+  it("keeps the worktree queue available when opening a discovered worktree fails", async () => {
+    localStorage.removeItem("patchdeck.review-screen");
+    localStorage.setItem("patchdeck.session", JSON.stringify({ version: 1, tabs: [{ name: repository.name, path: repository.path, openMode: "repository" }], activePath: repository.path }));
+    const external = { ...repository, name: "missing-agent", path: "/work/missing-agent" };
+    let reads = 0;
+    mocks.openRepository.mockImplementation((path: string) => {
+      if (path !== external.path) return Promise.resolve(repository);
+      return ++reads === 1 ? Promise.resolve(external) : Promise.reject(new Error("Worktree was removed"));
+    });
+    mocks.listCardWorktrees.mockResolvedValue([{ path: external.path, branch: "feature" }]);
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Review feature" }));
+
+    expect(await screen.findByText("Worktree was removed")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Worktree review queue" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: repository.name })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByRole("combobox", { name: "Comparison mode" })).not.toBeInTheDocument();
+  });
+
+  it("preserves Work scope, source, list view, filter, search, and list position across Review", async () => {
+    localStorage.setItem("patchdeck.session", JSON.stringify({ version: 1, tabs: [{ name: repository.name, path: repository.path, openMode: "repository" }], activePath: repository.path }));
+    localStorage.setItem("patchdeck.active-surface", "agent");
+    createLocalCard({ repositoryPath: repository.path, title: "Finished task", lane: "done" });
+    createLocalCard({ repositoryPath: "/work/elsewhere", title: "Unfinished task", lane: "todo" });
+    mocks.openRepository.mockResolvedValue(repository);
+    mocks.compareBranches.mockResolvedValue(comparison);
+    mocks.loadFileDiff.mockResolvedValue(fileDiff);
+
+    render(<App />);
+    const navigation = await screen.findByRole("navigation", { name: "Work navigation" });
+    fireEvent.click(within(navigation).getByRole("button", { name: "All" }));
+    fireEvent.change(within(navigation).getByLabelText("Work source"), { target: { value: "local" } });
+    fireEvent.click(within(navigation).getByRole("button", { name: "List" }));
+    fireEvent.change(within(navigation).getByLabelText("Work filter"), { target: { value: "completed" } });
+    fireEvent.change(within(navigation).getByLabelText("Search work"), { target: { value: "Finished" } });
+    const board = screen.getByLabelText("Local Kanban board");
+    fireEvent.wheel(board);
+    board.scrollTop = 240;
+    fireEvent.scroll(board);
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    await screen.findByRole("combobox", { name: "Comparison mode" });
+    fireEvent.click(screen.getByRole("button", { name: "Work" }));
+
+    const restored = await screen.findByRole("navigation", { name: "Work navigation" });
+    expect(within(restored).getByRole("button", { name: "All" })).toHaveAttribute("aria-pressed", "true");
+    expect(within(restored).getByRole("button", { name: "List" })).toHaveAttribute("aria-pressed", "true");
+    expect(within(restored).getByLabelText("Work source")).toHaveValue("local");
+    expect(within(restored).getByLabelText("Work filter")).toHaveValue("completed");
+    expect(within(restored).getByLabelText("Search work")).toHaveValue("Finished");
+    expect(screen.getByText("Finished task")).toBeInTheDocument();
+    expect(screen.queryByText("Unfinished task")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByLabelText("Local Kanban board")).toHaveProperty("scrollTop", 240));
+  });
+
   it("starts with a local-only repository prompt", () => {
     render(<App />);
     expect(screen.getByRole("heading", { name: /welcome to patchdeck/i })).toBeInTheDocument();
@@ -280,6 +364,7 @@ describe("Patchdeck", () => {
     mocks.openRepository.mockResolvedValue(repository);
     mocks.compareBranches.mockResolvedValue(comparison);
     mocks.loadFileDiff.mockResolvedValue(fileDiff);
+    mocks.loadWorkingTreeFileDiff.mockResolvedValue(fileDiff);
 
     render(<App />);
 
@@ -307,7 +392,7 @@ describe("Patchdeck", () => {
     render(<App />);
 
     expect(await screen.findByText("Local board")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Agent board" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Work" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getAllByRole("button", { name: /New work/ })).toHaveLength(1);
     expect(screen.queryByRole("button", { name: "Connect Hermes" })).not.toBeInTheDocument();
   });
@@ -342,7 +427,7 @@ describe("Patchdeck", () => {
     act(() => receiveRuntimeEvent({
       payload: { runtimeId: "codex", runId, type: "agentDelta", delta: "Finished while review was open." },
     }));
-    fireEvent.click(screen.getByRole("button", { name: "Agent board" }));
+    fireEvent.click(screen.getByRole("button", { name: "Work" }));
     fireEvent.click(await screen.findByText("Track background run"));
 
     expect(await screen.findByText("Finished while review was open.")).toBeInTheDocument();
@@ -371,8 +456,9 @@ describe("Patchdeck", () => {
 
     render(<App />);
 
-    const navigator = await screen.findByRole("navigation", { name: "Board navigator" });
-    fireEvent.click(within(navigator).getByRole("button", { name: "All Work" }));
+    const navigator = await screen.findByRole("navigation", { name: "Work navigation" });
+    fireEvent.change(within(navigator).getByLabelText("Work source"), { target: { value: "all" } });
+    fireEvent.click(within(navigator).getByRole("button", { name: "All" }));
     fireEvent.click(screen.getByText("Run in the other repository"));
 
     await waitFor(() => expect(mocks.openRepository).toHaveBeenCalledWith(otherRepository.path));
@@ -403,24 +489,39 @@ describe("Patchdeck", () => {
   });
 
   it("consumes return-to-card navigation instead of reopening the old drawer", async () => {
+    const worktree = { ...repository, name: "review-worktree", path: "/work/example-review" };
     localStorage.setItem("patchdeck.session", JSON.stringify({ version: 1, tabs: [{ name: repository.name, path: repository.path, openMode: "repository" }], activePath: repository.path }));
     localStorage.setItem("patchdeck.active-surface", "agent");
     const card = createLocalCard({ repositoryPath: repository.path, title: "Review this card" });
-    patchLocalCard(card.id, { workspace: { repositoryPath: repository.path, worktreePath: repository.path, branch: "feature", baseBranch: "main" } });
+    patchLocalCard(card.id, { workspace: { repositoryPath: repository.path, worktreePath: worktree.path, branch: "feature", baseBranch: "main" } });
     createLocalCard({ repositoryPath: repository.path, title: "Another card" });
-    mocks.openRepository.mockResolvedValue(repository);
+    mocks.openRepository.mockImplementation((path: string) => Promise.resolve(path === worktree.path ? worktree : repository));
+    mocks.compareBranches.mockResolvedValue(comparison);
+    mocks.loadFileDiff.mockResolvedValue(fileDiff);
     mocks.loadWorkingTreeFileDiff.mockResolvedValue(fileDiff);
     render(<App />);
+    const boardScroll = await screen.findByLabelText("Local Kanban board");
+    const firstLane = document.querySelector<HTMLElement>(".kanban-card-list")!;
+    boardScroll.scrollLeft = 240;
+    firstLane.scrollTop = 75;
+    fireEvent.scroll(boardScroll);
+    fireEvent.scroll(firstLane);
     fireEvent.click(await screen.findByText("Review this card"));
     fireEvent.click(screen.getByRole("button", { name: "Review changes" }));
+    expect(await screen.findByRole("tab", { name: worktree.name })).toHaveAttribute("aria-selected", "true");
     fireEvent.click(await screen.findByRole("button", { name: "Back to card" }));
+    expect(await screen.findByRole("tab", { name: repository.name })).toHaveAttribute("aria-selected", "true");
     expect(await screen.findByRole("complementary", { name: "Review this card card details" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Local Kanban board")).toHaveProperty("scrollLeft", 240);
+    expect(document.querySelector<HTMLElement>(".kanban-card-list")).toHaveProperty("scrollTop", 75);
     fireEvent.click(screen.getByRole("button", { name: "Close card details" }));
-    fireEvent.click(screen.getByText("Another card"));
     fireEvent.click(screen.getByRole("button", { name: "Review" }));
-    fireEvent.click(screen.getByRole("button", { name: "Agent board" }));
+    expect(await screen.findByRole("tab", { name: worktree.name })).toHaveAttribute("aria-selected", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Work" }));
     await screen.findByText("Local board");
+    expect(screen.getByRole("tab", { name: repository.name })).toHaveAttribute("aria-selected", "true");
     expect(screen.queryByRole("complementary", { name: "Review this card card details" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Local Kanban board")).toHaveProperty("scrollLeft", 240);
   });
 
   it("shows a failed All Work repository open without leaving the Agent Board", async () => {
@@ -441,13 +542,14 @@ describe("Patchdeck", () => {
 
     render(<App />);
 
-    const navigator = await screen.findByRole("navigation", { name: "Board navigator" });
-    fireEvent.click(within(navigator).getByRole("button", { name: "All Work" }));
+    const navigator = await screen.findByRole("navigation", { name: "Work navigation" });
+    fireEvent.change(within(navigator).getByLabelText("Work source"), { target: { value: "all" } });
+    fireEvent.click(within(navigator).getByRole("button", { name: "All" }));
     fireEvent.click(screen.getByText("Work in a missing repository"));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("Could not open the card repository");
-    expect(screen.getByRole("button", { name: "Agent board" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("navigation", { name: "Board navigator" })).toBeInTheDocument();
+    expect((await screen.findAllByRole("alert")).some((alert) => alert.textContent?.includes("Could not open the card repository"))).toBe(true);
+    expect(screen.getByRole("button", { name: "Work" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("navigation", { name: "Work navigation" })).toBeInTheDocument();
   });
 
   it("opens the task workspace when Review code targets a different repository", async () => {
@@ -481,6 +583,7 @@ describe("Patchdeck", () => {
     mocks.openRepository.mockImplementation((path: string) => Promise.resolve(path === olive.path ? olive : sxcl));
     mocks.compareBranches.mockResolvedValue(comparison);
     mocks.loadFileDiff.mockResolvedValue(fileDiff);
+    mocks.loadWorkingTreeFileDiff.mockResolvedValue(fileDiff);
     hermesMocks.listHermesBoards.mockResolvedValue({
       current: "olive",
       boards: [{ slug: "olive", name: "Olive", total: 1 }],
@@ -516,9 +619,18 @@ describe("Patchdeck", () => {
 
     render(<App />);
 
-    fireEvent.click(within(await screen.findByRole("navigation", { name: "Board navigator" })).getByRole("button", { name: "Hermes · Olive" }));
+    const navigator = await screen.findByRole("navigation", { name: "Work navigation" });
+    await within(navigator).findByRole("option", { name: "Hermes · Olive" });
+    fireEvent.click(within(navigator).getByRole("button", { name: "All" }));
+    fireEvent.change(within(navigator).getByLabelText("Work source"), { target: { value: "hermes:olive" } });
 
     expect(await screen.findByRole("tab", { name: sxcl.name })).toHaveAttribute("aria-selected", "true");
+    const boardScroll = await screen.findByLabelText("Hermes Kanban board");
+    const runningLane = document.querySelector<HTMLElement>(".kanban-card-list")!;
+    boardScroll.scrollLeft = 320;
+    runningLane.scrollTop = 90;
+    fireEvent.scroll(boardScroll);
+    fireEvent.scroll(runningLane);
     fireEvent.click(await screen.findByText("Repair Olive service"));
     fireEvent.click(await screen.findByRole("button", { name: "Review code" }));
 
@@ -527,10 +639,22 @@ describe("Patchdeck", () => {
     expect(screen.getByRole("tab", { name: sxcl.name })).toHaveAttribute("aria-selected", "false");
     expect(screen.getByRole("button", { name: "Review" })).toHaveAttribute("aria-pressed", "true");
     expect(await screen.findByRole("button", { name: "Edit" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Comparison mode" })).toHaveValue("workingTree");
+    expect(mocks.compareWorkingTree).toHaveBeenCalledWith(olive.path, "main");
 
-    fireEvent.click(screen.getByRole("tab", { name: sxcl.name }));
-    await waitFor(() => expect(screen.getByRole("tab", { name: sxcl.name })).toHaveAttribute("aria-selected", "true"));
-    expect(within(screen.getByRole("tabpanel")).queryByTitle("Reviewing Repair Olive service")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Back to task" }));
+    expect(await screen.findByRole("tab", { name: sxcl.name })).toHaveAttribute("aria-selected", "true");
+    expect(within(screen.getByRole("navigation", { name: "Work navigation" })).getByLabelText("Work source")).toHaveValue("hermes:olive");
+    expect(await screen.findByRole("complementary", { name: "Hermes task details" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Hermes Kanban board")).toHaveProperty("scrollLeft", 320);
+    await waitFor(() => expect(document.querySelector<HTMLElement>(".kanban-card-list")).toHaveProperty("scrollTop", 90));
+
+    fireEvent.click(screen.getByRole("button", { name: "Close task details" }));
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    expect(await screen.findByRole("tab", { name: olive.name })).toHaveAttribute("aria-selected", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Work" }));
+    expect(await screen.findByRole("tab", { name: sxcl.name })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByRole("complementary", { name: "Hermes task details" })).not.toBeInTheDocument();
   });
 
   it("opens every direct workspace repository as a tab and loads inactive projects lazily", async () => {

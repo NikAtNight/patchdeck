@@ -69,7 +69,7 @@ describe("Hermes workspace", () => {
         { name: "todo", tasks: [] },
         { name: "scheduled", tasks: [] },
         { name: "ready", tasks: [] },
-        { name: "running", tasks: [{ id: "task-1", title: "Build review loop", status: "running", assignee: "coder", comment_count: 1 }] },
+        { name: "running", tasks: [{ id: "task-1", title: "Build review loop", status: "running", assignee: "coder", comment_count: 1, workspace_path: "/work/product" }] },
         { name: "blocked", tasks: [] },
         { name: "review", tasks: [] },
         { name: "done", tasks: [] },
@@ -120,6 +120,18 @@ describe("Hermes workspace", () => {
     fireEvent.click(screen.getByRole("button", { name: "log" }));
     expect(await screen.findByText("working on the task")).toBeInTheDocument();
     expect(mocks.getHermesTaskLog).toHaveBeenCalledWith("product", "task-1");
+  });
+
+  it("filters named Hermes boards by status, search, and repository paths", async () => {
+    const view = render(<HermesBoard session={session} workFilter="attention" query="review" scopeRepositoryPaths={["/work/product"]} onReviewTask={vi.fn()} />);
+    await waitFor(() => expect(mocks.getHermesBoard).toHaveBeenCalled());
+    expect(screen.queryByText("Build review loop")).not.toBeInTheDocument();
+
+    view.rerender(<HermesBoard session={session} workFilter="active" query="review" scopeRepositoryPaths={["/work/product"]} onReviewTask={vi.fn()} />);
+    expect(await screen.findByText("Build review loop")).toBeInTheDocument();
+
+    view.rerender(<HermesBoard session={session} workFilter="active" query="review" scopeRepositoryPaths={["/work/other"]} onReviewTask={vi.fn()} />);
+    expect(screen.queryByText("Build review loop")).not.toBeInTheDocument();
   });
 
   it("sends human feedback into the selected Hermes task", async () => {
@@ -340,6 +352,130 @@ describe("Hermes workspace", () => {
     expect(screen.getByRole("button", { name: "Complete task" })).toBeInTheDocument();
     expect(screen.getByLabelText("Task transitions").querySelectorAll("button")).toHaveLength(2);
     expect(screen.queryByRole("button", { name: "Move task to running" })).not.toBeInTheDocument();
+  });
+
+  it("bulk archives eligible tasks once and leaves partial failures selected for retry", async () => {
+    mocks.getHermesBoard.mockResolvedValue({
+      columns: [
+        { name: "todo", tasks: [
+          { id: "task-a", title: "Archive A", status: "todo" },
+          { id: "task-b", title: "Archive B", status: "todo" },
+        ] },
+        { name: "running", tasks: [{ id: "task-running", title: "Still running", status: "running" }] },
+      ],
+      tenants: [], assignees: [], latest_event_id: 1, now: 1,
+    });
+    const firstArchive = deferred<unknown>();
+    mocks.patchHermesTaskStatus.mockImplementation((_: string, taskId: string) => {
+      if (taskId === "task-a") return firstArchive.promise;
+      return Promise.reject(new Error("archive failed"));
+    });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<HermesBoard session={session} boardSlug="product" onReviewTask={vi.fn()} />);
+    await screen.findByText("Archive A");
+
+    fireEvent.click(screen.getByRole("button", { name: "Select tasks" }));
+    expect(screen.getByRole("checkbox", { name: "Select Hermes task Still running" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Select all archivable tasks in To do" }));
+    expect(screen.getByText("2 selected")).toBeInTheDocument();
+    const archiveButton = screen.getByRole("button", { name: "Archive selected" });
+    fireEvent.click(archiveButton);
+    fireEvent.click(archiveButton);
+    expect(mocks.patchHermesTaskStatus).toHaveBeenCalledTimes(1);
+
+    await act(async () => firstArchive.resolve({ ok: true }));
+    await waitFor(() => expect(mocks.patchHermesTaskStatus).toHaveBeenCalledTimes(2));
+    expect(mocks.patchHermesTaskStatus).toHaveBeenNthCalledWith(1, "product", "task-a", "archived");
+    expect(mocks.patchHermesTaskStatus).toHaveBeenNthCalledWith(2, "product", "task-b", "archived");
+    expect(await screen.findByRole("alert")).toHaveTextContent("1 task archived. 1 failed and remains selected.");
+    expect(screen.queryByText("Archive A")).not.toBeInTheDocument();
+    expect(screen.getByText("Archive B")).toBeInTheDocument();
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
+
+    mocks.patchHermesTaskStatus.mockResolvedValue({ ok: true });
+    fireEvent.click(screen.getByRole("button", { name: "Archive selected" }));
+    await waitFor(() => expect(screen.queryByText("Archive B")).not.toBeInTheDocument());
+    expect(screen.getByText("0 selected")).toBeInTheDocument();
+    expect(window.confirm).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops a batch when the selected Hermes board changes", async () => {
+    mocks.listHermesBoards.mockResolvedValue({
+      current: "product",
+      boards: [{ slug: "product", name: "Product" }, { slug: "other", name: "Other" }],
+    });
+    mocks.getHermesBoard.mockImplementation((board: string) => Promise.resolve({
+      columns: [{ name: "todo", tasks: board === "product" ? [
+        { id: "task-a", title: "First scoped task", status: "todo" },
+        { id: "task-b", title: "Second scoped task", status: "todo" },
+      ] : [] }],
+      tenants: [], assignees: [], latest_event_id: 1, now: 1,
+    }));
+    const firstArchive = deferred<unknown>();
+    mocks.patchHermesTaskStatus.mockReturnValue(firstArchive.promise);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<HermesBoard session={session} onReviewTask={vi.fn()} />);
+    await screen.findByText("First scoped task");
+
+    fireEvent.click(screen.getByRole("button", { name: "Select tasks" }));
+    fireEvent.click(screen.getByRole("button", { name: "Select all archivable tasks in To do" }));
+    fireEvent.click(screen.getByRole("button", { name: "Archive selected" }));
+    expect(mocks.patchHermesTaskStatus).toHaveBeenCalledTimes(1);
+    fireEvent.change(screen.getByLabelText("Board"), { target: { value: "other" } });
+    await act(async () => firstArchive.resolve({ ok: true }));
+
+    await waitFor(() => expect(screen.getByText("Other")).toBeInTheDocument());
+    expect(mocks.patchHermesTaskStatus).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(/task archived/i)).not.toBeInTheDocument();
+  });
+
+  it("stops a batch when the Hermes session changes", async () => {
+    mocks.getHermesBoard.mockResolvedValue({
+      columns: [{ name: "todo", tasks: [
+        { id: "task-a", title: "First session task", status: "todo" },
+        { id: "task-b", title: "Second session task", status: "todo" },
+      ] }],
+      tenants: [], assignees: [], latest_event_id: 1, now: 1,
+    });
+    const firstArchive = deferred<unknown>();
+    mocks.patchHermesTaskStatus.mockReturnValue(firstArchive.promise);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const { rerender } = render(<HermesBoard session={session} boardSlug="product" onReviewTask={vi.fn()} />);
+    await screen.findByText("First session task");
+    fireEvent.click(screen.getByRole("button", { name: "Select tasks" }));
+    fireEvent.click(screen.getByRole("button", { name: "Select all archivable tasks in To do" }));
+    fireEvent.click(screen.getByRole("button", { name: "Archive selected" }));
+    expect(mocks.patchHermesTaskStatus).toHaveBeenCalledTimes(1);
+
+    rerender(<HermesBoard session={{ ...session, status: { ...session.status, url: "http://127.0.0.1:43118" } }} boardSlug="product" onReviewTask={vi.fn()} />);
+    await act(async () => firstArchive.resolve({ ok: true }));
+
+    expect(mocks.patchHermesTaskStatus).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(/task archived/i)).not.toBeInTheDocument();
+  });
+
+  it("stops a batch after the board unmounts", async () => {
+    mocks.getHermesBoard.mockResolvedValue({
+      columns: [{ name: "todo", tasks: [
+        { id: "task-a", title: "First unmounted task", status: "todo" },
+        { id: "task-b", title: "Second unmounted task", status: "todo" },
+      ] }],
+      tenants: [], assignees: [], latest_event_id: 1, now: 1,
+    });
+    const firstArchive = deferred<unknown>();
+    mocks.patchHermesTaskStatus.mockReturnValue(firstArchive.promise);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const view = render(<HermesBoard session={session} boardSlug="product" onReviewTask={vi.fn()} />);
+    await screen.findByText("First unmounted task");
+    fireEvent.click(screen.getByRole("button", { name: "Select tasks" }));
+    fireEvent.click(screen.getByRole("button", { name: "Select all archivable tasks in To do" }));
+    fireEvent.click(screen.getByRole("button", { name: "Archive selected" }));
+    expect(mocks.patchHermesTaskStatus).toHaveBeenCalledTimes(1);
+
+    view.unmount();
+    await act(async () => firstArchive.resolve({ ok: true }));
+
+    expect(mocks.patchHermesTaskStatus).toHaveBeenCalledTimes(1);
   });
 
   it("creates tasks from eligible columns with the native Hermes fields", async () => {
